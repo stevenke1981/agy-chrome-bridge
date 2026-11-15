@@ -1,0 +1,16 @@
+name: Windows CI
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - run: cargo fmt --check
+      - run: cargo build --locked
+      - run: python tests/bridge_test.py target/debug/agy-chrome-bridge.exe
+      - run: node tests/extension_test.cjs
+      - run: python tests/installer_test.py
