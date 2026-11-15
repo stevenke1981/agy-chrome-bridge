@@ -116,7 +116,8 @@ async function run(method, params) {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (sender.id !== chrome.runtime.id) return;
-  if (message.type === 'status') { connect(); sendResponse({ status }); }
+  if (message.type === 'reconnect') connect();
+  if (message.type === 'status' || message.type === 'reconnect') sendResponse({ status });
 });
 chrome.runtime.onStartup.addListener(connect);
 chrome.runtime.onInstalled.addListener(connect);

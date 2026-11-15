@@ -8,11 +8,12 @@ function event() {
 }
 const updated = event();
 const debuggerEvents = event();
+const nativePort = { onMessage: event(), onDisconnect: event(), postMessage() {} };
 let images = [];
 let newPageLoaded = false;
 let download = false;
 const chrome = {
-  runtime: { connectNative: () => ({ onMessage: event(), onDisconnect: event(), postMessage() {} }), onMessage: event(), onStartup: event(), onInstalled: event(), id: 'test' },
+  runtime: { connectNative: () => nativePort, onMessage: event(), onStartup: event(), onInstalled: event(), id: 'test' },
   storage: { session: { get: async () => ({ sharedTabs: [7] }), set: async () => {} } },
   tabs: { get: async id => ({ id, url: 'https://example.com', title: 'Example' }), update: async (id, options) => {
     updated.emit(id, { status: 'complete' }, { url: 'https://old.example/' });
@@ -34,6 +35,16 @@ const context = vm.createContext({ chrome, URL, setTimeout, clearTimeout, consol
 vm.runInContext(fs.readFileSync('extension/background.js', 'utf8'), context);
 const run = (method, params) => vm.runInContext('run', context)(method, params);
 (async () => {
+  let reported;
+  chrome.runtime.onMessage.emit({ type: 'status' }, { id: 'test' }, result => { reported = result.status; });
+  assert.equal(reported, 'connecting');
+  nativePort.onMessage.emit({ type: 'ready' });
+  chrome.runtime.onMessage.emit({ type: 'status' }, { id: 'test' }, result => { reported = result.status; });
+  assert.equal(reported, 'connected');
+  chrome.runtime.lastError = { message: 'Native host unavailable' };
+  nativePort.onDisconnect.emit();
+  chrome.runtime.onMessage.emit({ type: 'status' }, { id: 'test' }, result => { reported = result.status; });
+  assert.equal(reported, 'Native host unavailable');
   assert.equal((await run('browser_tabs', {}))[0].id, 7);
   await assert.rejects(() => run('browser_snapshot', { tabId: 8 }), /not shared/);
   await assert.rejects(() => run('browser_navigate', { tabId: 7, url: 'file:///secret' }), /HTTP and HTTPS/);
