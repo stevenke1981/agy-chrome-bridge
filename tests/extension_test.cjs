@@ -12,6 +12,12 @@ const nativePort = { onMessage: event(), onDisconnect: event(), postMessage() {}
 let images = [];
 let newPageLoaded = false;
 let download = false;
+let obstructed = false;
+let mouseEvents = 0;
+let duplicateFixture = false;
+let editable = false;
+let redirectFocus = false;
+let typedText = [];
 const chrome = {
   runtime: { connectNative: () => nativePort, onMessage: event(), onStartup: event(), onInstalled: event(), id: 'test' },
   storage: { session: { get: async () => ({ sharedTabs: [7] }), set: async () => {} } },
@@ -20,8 +26,27 @@ const chrome = {
     setImmediate(() => { updated.emit(id, { status: 'loading', url: options.url }, { url: options.url }); updated.emit(id, { status: 'complete' }, { url: options.url }); });
     return { url: 'https://old.example/', status: 'loading' };
   }, onUpdated: updated, onRemoved: event() },
-  debugger: { attach: async () => {}, detach: async () => {}, onEvent: debuggerEvents, sendCommand: async (target, method) => {
+  debugger: { attach: async () => {}, detach: async () => {}, onEvent: debuggerEvents, sendCommand: async (target, method, params) => {
     if (method === 'Page.captureScreenshot') return { data: images.shift() };
+    if (method === 'Input.dispatchMouseEvent') { mouseEvents++; return {}; }
+    if (method === 'Input.insertText') { typedText.push(params.text); return {}; }
+    if (method === 'Runtime.evaluate') {
+      const element = { getBoundingClientRect: () => ({ x: 10, y: 10, width: 40, height: 20 }), scrollIntoView() {}, focus() { document.activeElement = redirectFocus ? {} : element; }, matches: () => editable, contains: hit => hit === element };
+      const document = { querySelector: () => element, querySelectorAll: selector => selector === '#duplicate' ? [element, element] : [element], elementFromPoint: () => obstructed ? {} : element };
+      if (duplicateFixture) {
+        const html = { nodeType: 1, localName: 'html', parentElement: null };
+        const body = { nodeType: 1, localName: 'body', parentElement: html };
+        html.children = [body];
+        const button = text => ({ nodeType: 1, id: 'duplicate', localName: 'button', tagName: 'BUTTON', parentElement: body, offsetWidth: 10, offsetHeight: 10, innerText: text, getAttribute: () => null });
+        const buttons = [button('Delete'), button('Save')];
+        body.children = buttons;
+        document.body = { innerText: 'Delete Save' };
+        document.title = 'Duplicate identifiers';
+        document.querySelectorAll = selector => selector === '#duplicate' || selector.startsWith('a,button,') ? buttons : [];
+      }
+      try { return { result: { value: vm.runInNewContext(params.expression, { document, CSS: { escape: x => x }, location: { href: 'https://example.com' } }) } }; }
+      catch (error) { return { exceptionDetails: { text: error.message } }; }
+    }
     if (method === 'Page.navigate') {
       if (download) return { isDownload: true };
       debuggerEvents.emit(target, 'Page.lifecycleEvent', { name: 'load', loaderId: 'old' });
@@ -50,6 +75,25 @@ const run = (method, params) => vm.runInContext('run', context)(method, params);
   await assert.rejects(() => run('browser_navigate', { tabId: 7, url: 'file:///secret' }), /HTTP and HTTPS/);
   assert.equal((await run('browser_navigate', { tabId: 7, url: 'https://example.org/' })).navigated, 'https://example.org/');
   assert.equal(newPageLoaded, true);
+  duplicateFixture = true;
+  const snapshot = await run('browser_snapshot', { tabId: 7 });
+  assert.notEqual(snapshot.elements[0].selector, snapshot.elements[1].selector, 'duplicate IDs need distinct selectors');
+  duplicateFixture = false;
+  await assert.rejects(() => run('browser_click', { tabId: 7, selector: '#duplicate' }), /multiple elements/);
+  assert.equal(mouseEvents, 0, 'an ambiguous selector must not receive a mouse event');
+  obstructed = true;
+  await assert.rejects(() => run('browser_click', { tabId: 7, selector: '#target' }), /obstructed/);
+  assert.equal(mouseEvents, 0, 'a covered element must not receive a mouse event');
+  obstructed = false;
+  await run('browser_click', { tabId: 7, selector: '#target' });
+  assert.equal(mouseEvents, 2, 'an unobstructed element receives a complete click');
+  editable = true;
+  redirectFocus = true;
+  await assert.rejects(() => run('browser_type', { tabId: 7, selector: '#target', text: 'test' }), /focus/);
+  assert.deepEqual(typedText, []);
+  redirectFocus = false;
+  await run('browser_type', { tabId: 7, selector: '#target', text: 'test' });
+  assert.deepEqual(typedText, ['test']);
   download = true;
   await assert.rejects(() => run('browser_navigate', { tabId: 7, url: 'https://example.org/file.zip' }), /download/);
   download = false;

@@ -77,13 +77,15 @@ async function run(method, params) {
     if (method === 'browser_snapshot') {
       expression = `(() => {
         const path = el => {
-          if (el.id) return '#' + CSS.escape(el.id);
           const parts = [];
-          for (let node = el; node && node.nodeType === 1 && parts.length < 8; node = node.parentElement) {
+          for (let node = el; node && node.nodeType === 1; node = node.parentElement) {
+            if (node.id) {
+              const id = '#' + CSS.escape(node.id);
+              if (document.querySelectorAll(id).length === 1) { parts.unshift(id); break; }
+            }
             let part = node.localName;
             if (node.parentElement) part += ':nth-child(' + (Array.prototype.indexOf.call(node.parentElement.children, node) + 1) + ')';
             parts.unshift(part);
-            if (node.id) { parts[0] = '#' + CSS.escape(node.id); break; }
           }
           return parts.join(' > ');
         };
@@ -93,7 +95,27 @@ async function run(method, params) {
       })()`;
     } else if (method === 'browser_click' || method === 'browser_type') {
       if (typeof params.selector !== 'string' || params.selector.length > 2000) throw new Error('A CSS selector is required.');
-      expression = `(() => { const el = document.querySelector(${JSON.stringify(params.selector)}); if (!el) throw new Error('Element not found'); const rect = el.getBoundingClientRect(); if (!rect.width || !rect.height) throw new Error('Element is not visible'); el.scrollIntoView({block:'center',inline:'center'}); el.focus(); const r = el.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2,editable:el.matches('input:not([type=hidden]),textarea,[contenteditable=true]')}; })()`;
+      if (method === 'browser_type' && (typeof params.text !== 'string' || params.text.length > 20000)) throw new Error('Text is required.');
+      expression = `(() => {
+        const matches = document.querySelectorAll(${JSON.stringify(params.selector)});
+        if (matches.length === 0) throw new Error('Element not found');
+        if (matches.length !== 1) throw new Error('Selector matches multiple elements');
+        const el = matches[0];
+        const rect = el.getBoundingClientRect();
+        if (!rect.width || !rect.height) throw new Error('Element is not visible');
+        el.scrollIntoView({block:'center',inline:'center'});
+        const r = el.getBoundingClientRect();
+        const x = r.x + r.width / 2, y = r.y + r.height / 2;
+        const hit = document.elementFromPoint(x, y);
+        if (!hit || (hit !== el && !el.contains(hit))) throw new Error('Element is obstructed or outside the viewport');
+        const editable = el.matches('input:not([type=hidden]),textarea,[contenteditable=true]');
+        if (${method === 'browser_type'}) {
+          if (!editable) throw new Error('An editable element is required');
+          el.focus();
+          if (document.activeElement !== el && !el.contains(document.activeElement)) throw new Error('Could not focus the requested element');
+        }
+        return {x, y, editable};
+      })()`;
     } else {
       throw new Error('Unknown browser operation');
     }
@@ -105,7 +127,6 @@ async function run(method, params) {
       await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', { type: 'mousePressed', x: value.x, y: value.y, button: 'left', clickCount: 1 });
       await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x: value.x, y: value.y, button: 'left', clickCount: 1 });
     } else {
-      if (!value.editable || typeof params.text !== 'string' || params.text.length > 20000) throw new Error('An editable element and text are required.');
       await chrome.debugger.sendCommand(target, 'Input.insertText', { text: params.text });
     }
     return { ok: true };
