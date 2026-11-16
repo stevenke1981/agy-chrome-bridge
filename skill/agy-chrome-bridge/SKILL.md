@@ -55,6 +55,16 @@ site (origin) that the tab had when the user shared it.
   - "Chrome is not connected": ask the user to check that the extension icon shows
     **ON**. If it does not, the user can open the extension popup and click
     **Reconnect**.
-  - A timeout: take a fresh snapshot, then decide whether to retry once.
+  - "Element not found", "Selector matches multiple elements": take a fresh
+    snapshot and use a selector from it.
+  - "Element is obstructed or outside the viewport": scroll or close the overlay,
+    take a fresh snapshot, then retry.
+  - "Browser operation timed out": take a fresh snapshot, then decide whether to
+    retry once.
+- Limits:
+  - `browser_scroll` deltas must be within ±3000.
+  - `browser_type` text can be at most 20,000 characters.
+  - `browser_key` accepts single letters and digits, plus the named keys above;
+    `modifiers` can be `Alt`, `Control`, `Meta` or `Shift`.
 - Chrome may show a "started debugging this browser" banner during an operation.
   This is expected.
