@@ -1,10 +1,10 @@
 {
   "manifest_version": 3,
   "name": "AGY Chrome Bridge",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Share chosen Chrome tabs with the Antigravity CLI and IDE.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvGikIHDzMw69JlTG0RT6WrAlGH6NpCv4sR7OdvTvviqWMS4mARnCkyQjqCZbJhIuRnK9+0rnm1UpGRJnrK/MXBQV3pLfmS4QyDY6SYTZIu5qjZ5JR4C/cQHwTc0smCQtMrTh85JEuHYV8/EoKGLWd8CjQne5lYppQ4/josV1kRZfzCsGLA2tbHi/5hUeLsq3WuQ9dNTXrKW3rHNvtHfAtMEybaRFNyvSz9VUlroeEVMWbFrXdQGnyBowxZT3PKMCizZnD6QbrQ4tr3CzwvukxsBg88bdqWqv8zR7bssaQDynIQptmJpC0xZ29laHLDppATgggfQIP9flUsonPcAHcwIDAQAB",
-  "permissions": ["debugger", "storage", "tabs"],
+  "permissions": ["alarms", "debugger", "storage", "tabs"],
   "host_permissions": ["http://127.0.0.1/*"],
   "background": {"service_worker": "background.js"},
   "action": {"default_popup": "popup.html", "default_title": "AGY Chrome Bridge"}

@@ -58,6 +58,14 @@ function receive(socket) {
   });
 }
 
+function closedWith(socket) {
+  return new Promise(resolve => socket.once('close', (code, reason) => resolve({ code, reason: reason.toString('utf8') })));
+}
+
+function exited(child) {
+  return child.exitCode !== null ? Promise.resolve(child.exitCode) : new Promise(resolve => child.once('exit', resolve));
+}
+
 async function challenge(socket, next, profile = profileKey, overrideProof) {
   const clientNonce = crypto.randomBytes(32).toString('hex');
   socket.send(JSON.stringify({ type: 'hello', nonce: clientNonce }));
@@ -67,6 +75,77 @@ async function challenge(socket, next, profile = profileKey, overrideProof) {
   const sent = overrideProof || proof('client', clientNonce, reply.nonce, profile);
   socket.send(JSON.stringify({ type: 'proof', profileKey: profile, proof: sent }));
   return sent;
+}
+
+async function startGateway(gatewayPath, env, endpoint) {
+  fs.rmSync(endpoint, { force: true });
+  const child = spawn(process.execPath, [gatewayPath], { env, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
+  for (let attempt = 0; attempt < 50 && !fs.existsSync(endpoint) && child.exitCode === null; attempt++) await wait(100);
+  return child;
+}
+
+async function checkWaitingCallCompletesOnReconnect(port, pendingCall) {
+  await wait(1000);
+  const returned = await connect(port);
+  const next = receive(returned);
+  await challenge(returned, next);
+  assert.deepEqual(await next(), { type: 'ready' });
+  const forwarded = await next();
+  assert.equal(forwarded.method, 'browser_tabs');
+  returned.send(JSON.stringify({ id: forwarded.id, result: [] }));
+  assert.deepEqual(JSON.parse((await pendingCall).result.content[0].text), []);
+  const closed = closedWith(returned);
+  returned.close();
+  await closed;
+  await wait(100);
+}
+
+async function checkUnreadablePairing({ env, bridge, gatewayPath, port, stateDir }) {
+  const endpoint = path.join(stateDir, 'endpoint.json');
+  const paired = path.join(stateDir, 'paired_profile.json');
+  fs.writeFileSync(paired, '{not json');
+  const gateway = await startGateway(gatewayPath, env, endpoint);
+  try {
+    assert.ok(fs.existsSync(endpoint), 'gateway must start even when the pairing file is unreadable');
+    const socket = await connect(port);
+    const next = receive(socket);
+    await challenge(socket, next);
+    assert.deepEqual(await closedWith(socket), { code: 4001, reason: 'profile-mismatch' });
+    assert.match(fs.readFileSync(path.join(stateDir, 'gateway.log'), 'utf8'), /paired_profile\.json/);
+    const unpaired = spawnSync(process.execPath, [bridge, '--unpair'], { env, windowsHide: true, encoding: 'utf8', timeout: 10000 });
+    assert.equal(unpaired.status, 0, unpaired.stderr);
+    assert.match(unpaired.stdout, /Stopped the gateway/);
+    assert.match(unpaired.stdout, /Removed the paired Chrome profile/);
+    assert.equal(fs.existsSync(paired), false);
+    assert.equal(await exited(gateway), 0);
+    const again = spawnSync(process.execPath, [bridge, '--unpair'], { env, windowsHide: true, encoding: 'utf8', timeout: 10000 });
+    assert.equal(again.status, 0, again.stderr);
+    assert.match(again.stdout, /Gateway was not running/);
+    assert.match(again.stdout, /No paired Chrome profile/);
+  } finally {
+    if (gateway.exitCode === null) gateway.kill();
+  }
+}
+
+async function checkGatewayLogLimit({ gatewayPath, env, temp }) {
+  const busy = net.createServer();
+  await new Promise(resolve => busy.listen(0, '127.0.0.1', resolve));
+  const busyRoot = path.join(temp, 'busy');
+  const stateDir = path.join(busyRoot, 'agy-chrome-bridge', 'state');
+  fs.mkdirSync(stateDir, { recursive: true });
+  const log = path.join(stateDir, 'gateway.log');
+  fs.writeFileSync(log, 'stale line\n'.repeat(30000));
+  try {
+    const busyEnv = { ...env, LOCALAPPDATA: busyRoot, AGY_BRIDGE_PORT: String(busy.address().port) };
+    const result = spawnSync(process.execPath, [gatewayPath], { env: busyEnv, windowsHide: true, encoding: 'utf8', timeout: 10000 });
+    assert.equal(result.status, 1, result.stderr);
+    const text = fs.readFileSync(log, 'utf8');
+    assert.match(text, /EADDRINUSE/);
+    assert.doesNotMatch(text, /stale line/);
+    assert.ok(Buffer.byteLength(text) <= 256 * 1024, 'gateway log must stay near 256 KB');
+  } finally {
+    await new Promise(resolve => busy.close(resolve));
+  }
 }
 
 (async () => {
@@ -86,12 +165,14 @@ async function challenge(socket, next, profile = profileKey, overrideProof) {
   await new Promise(resolve => available.close(resolve));
   const env = { ...process.env, LOCALAPPDATA: local, NODE_PATH: path.resolve('node_modules'), AGY_BRIDGE_PORT: String(port) };
   const bridge = path.join(bridgeDir, 'bridge.cjs');
-  const gateway = spawn(process.execPath, [path.join(bridgeDir, 'gateway.cjs')], { env, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
+  const gatewayPath = path.join(bridgeDir, 'gateway.cjs');
+  const gateway = spawn(process.execPath, [gatewayPath], { env, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
   let a;
   let b;
   let browser;
   try {
-    const endpoint = path.join(local, 'agy-chrome-bridge', 'state', 'endpoint.json');
+    const stateDir = path.join(local, 'agy-chrome-bridge', 'state');
+    const endpoint = path.join(stateDir, 'endpoint.json');
     for (let attempt = 0; attempt < 50 && !fs.existsSync(endpoint); attempt++) await wait(100);
     assert.ok(fs.existsSync(endpoint), 'gateway must create its protected endpoint');
     const address = JSON.parse(fs.readFileSync(endpoint, 'utf8'));
@@ -144,6 +225,11 @@ async function challenge(socket, next, profile = profileKey, overrideProof) {
     const manifest = JSON.parse(fs.readFileSync('extension/manifest.json', 'utf8'));
     assert.equal((await a.request(1, 'initialize', { protocolVersion: '2025-06-18' })).result.serverInfo.version, manifest.version);
     assert.ok((await b.request(1, 'tools/list')).result.tools.some(tool => tool.name === 'browser_tabs'));
+    const listed = (await b.request(6, 'tools/list')).result.tools;
+    const keySchema = listed.find(tool => tool.name === 'browser_key').inputSchema;
+    assert.deepEqual(keySchema.properties.modifiers, { type: 'array', items: { type: 'string', enum: ['Alt', 'Control', 'Meta', 'Shift'] } });
+    assert.ok(!('uniqueItems' in keySchema.properties.modifiers));
+    assert.ok(!('required' in listed.find(tool => tool.name === 'browser_tabs').inputSchema));
 
     const first = a.request(2, 'tools/call', { name: 'browser_tabs', arguments: {} });
     const second = b.request(2, 'tools/call', { name: 'browser_snapshot', arguments: { tabId: 7 } });
@@ -159,9 +245,13 @@ async function challenge(socket, next, profile = profileKey, overrideProof) {
     const closed = new Promise(resolve => browser.once('close', resolve));
     browser.close();
     await closed;
+    const startedAt = Date.now();
     const unavailable = await a.request(3, 'tools/call', { name: 'browser_tabs', arguments: {} });
+    assert.ok(Date.now() - startedAt >= 9500, 'gateway must wait about 10 s for the extension');
     assert.equal(unavailable.result.isError, true);
     assert.match(unavailable.result.content[0].text, /Chrome is not connected/);
+    await checkWaitingCallCompletesOnReconnect(port, a.request(5, 'tools/call', { name: 'browser_tabs', arguments: {} }));
+
     const replay = await connect(port);
     const replayNext = receive(replay);
     await challenge(replay, replayNext, profileKey, capturedProof);
@@ -169,7 +259,7 @@ async function challenge(socket, next, profile = profileKey, overrideProof) {
     const otherProfile = await connect(port);
     const otherNext = receive(otherProfile);
     await challenge(otherProfile, otherNext, 'd'.repeat(64));
-    assert.equal((await new Promise(resolve => otherProfile.once('close', resolve))), 1008);
+    assert.deepEqual(await closedWith(otherProfile), { code: 4001, reason: 'profile-mismatch' });
 
     const stopped = spawnSync(process.execPath, [bridge, '--shutdown'], { env, windowsHide: true, encoding: 'utf8', timeout: 5000 });
     assert.equal(stopped.status, 0, stopped.stderr);
@@ -181,9 +271,12 @@ async function challenge(socket, next, profile = profileKey, overrideProof) {
     const stillOther = await connect(port);
     const stillOtherNext = receive(stillOther);
     await challenge(stillOther, stillOtherNext, 'd'.repeat(64));
-    assert.equal((await new Promise(resolve => stillOther.once('close', resolve))), 1008, 'profile pairing survives a gateway restart');
+    assert.deepEqual(await closedWith(stillOther), { code: 4001, reason: 'profile-mismatch' }, 'profile pairing survives a gateway restart');
     const finalStop = spawnSync(process.execPath, [bridge, '--shutdown'], { env, windowsHide: true, encoding: 'utf8', timeout: 5000 });
     assert.equal(finalStop.status, 0, finalStop.stderr);
+
+    await checkUnreadablePairing({ env, bridge, gatewayPath, port, stateDir });
+    await checkGatewayLogLimit({ gatewayPath, env, temp });
     console.log('Gateway and two MCP clients passed');
   } finally {
     browser?.terminate();

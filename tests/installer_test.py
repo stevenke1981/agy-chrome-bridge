@@ -156,6 +156,55 @@ class InstallerTest(unittest.TestCase):
             finally:
                 subprocess.run(['reg', 'delete', 'HKCU\\' + key_name, '/f'], capture_output=True)
 
+    def test_prunes_old_backups_and_prints_reload_hint(self):
+        with tempfile.TemporaryDirectory(prefix='agy-測試-🧪-') as temp:
+            root = Path(temp)
+            local = root / 'local'
+            profile = root / 'profile'
+            bridge = local / 'agy-chrome-bridge'
+            (bridge / 'bridge').mkdir(parents=True)
+            (bridge / 'bridge' / 'bridge.cjs').write_text('previous bridge')
+            for index in range(3):
+                (bridge / f'bridge.backup_20200101_000000_00{index}').mkdir()
+            config = profile / '.gemini' / 'config' / 'mcp_config.json'
+            config.parent.mkdir(parents=True)
+            (root / 'agy.cmd').write_text('@exit /b 0\n')
+            key_name = 'Software\\AGYChromeBridgeTests\\' + uuid.uuid4().hex
+            env = {**os.environ, 'LOCALAPPDATA': str(local), 'USERPROFILE': str(profile), 'PATH': str(root) + os.pathsep + os.environ['PATH']}
+            try:
+                result = subprocess.run(['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(SCRIPT), '-RegistryPath', 'HKCU:\\' + key_name], capture_output=True, text=True, env=env, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                backups = sorted(path.name for path in bridge.glob('bridge.backup_*'))
+                self.assertEqual(len(backups), 2, backups)
+                self.assertNotIn('bridge.backup_20200101_000000_000', backups)
+                self.assertNotIn('bridge.backup_20200101_000000_001', backups)
+                self.assertIn('Reload the extension in chrome://extensions', result.stdout)
+            finally:
+                subprocess.run(['reg', 'delete', 'HKCU\\' + key_name, '/f'], capture_output=True)
+
+    def test_unparseable_mcp_config_fails_before_changes(self):
+        with tempfile.TemporaryDirectory(prefix='agy-測試-🧪-') as temp:
+            root = Path(temp)
+            local = root / 'local'
+            profile = root / 'profile'
+            bridge = local / 'agy-chrome-bridge'
+            config = profile / '.gemini' / 'config' / 'mcp_config.json'
+            config.parent.mkdir(parents=True)
+            original = '{\n  // comment\n  "mcpServers": {"other": {"command": "other"},},\n}\n'
+            config.write_text(original, encoding='utf-8')
+            (root / 'agy.cmd').write_text('@exit /b 0\n')
+            key_name = 'Software\\AGYChromeBridgeTests\\' + uuid.uuid4().hex
+            env = {**os.environ, 'LOCALAPPDATA': str(local), 'USERPROFILE': str(profile), 'PATH': str(root) + os.pathsep + os.environ['PATH']}
+            try:
+                result = subprocess.run(['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(SCRIPT), '-RegistryPath', 'HKCU:\\' + key_name], capture_output=True, text=True, env=env, timeout=30)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn('agy mcp add agy-chrome-bridge', result.stderr)
+                self.assertEqual(config.read_text(encoding='utf-8'), original)
+                self.assertFalse((bridge / 'bridge').exists())
+                self.assertFalse((bridge / 'extension').exists())
+            finally:
+                subprocess.run(['reg', 'delete', 'HKCU\\' + key_name, '/f'], capture_output=True)
+
 
 if __name__ == '__main__':
     unittest.main()
