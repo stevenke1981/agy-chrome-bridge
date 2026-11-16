@@ -15,21 +15,27 @@ function element() {
   };
 }
 
-async function setup(tab) {
+async function setup(tab, initial = {}) {
   const elements = Object.fromEntries(['version', 'status', 'pair', 'tab', 'toggle', 'reconnect', 'shared', 'unavailable', 'diagnose', 'diagnostic'].map(id => [id, element()]));
   const document = { querySelector: selector => elements[selector.slice(1)], createElement: element };
-  let sharedTabs = [];
+  const store = { sharedTabs: [], sharedOrigins: {}, ...initial };
   let profileKey;
   const messages = [];
   const chrome = {
     tabs: { query: async () => [tab], get: async id => ({ ...tab, id }) },
     runtime: { getManifest: () => manifest, sendMessage: async message => { messages.push(message.type); return { status: 'connected' }; } },
-    storage: { session: { get: async () => ({ sharedTabs }), set: async value => { sharedTabs = value.sharedTabs; } }, local: { get: async () => ({ profileKey }), set: async value => { profileKey = value.profileKey; } } },
+    storage: {
+      session: {
+        get: async defaults => Object.fromEntries(Object.entries(defaults).map(([key, fallback]) => [key, store[key] ?? fallback])),
+        set: async values => { Object.assign(store, values); },
+      },
+      local: { get: async () => ({ profileKey }), set: async value => { profileKey = value.profileKey; } },
+    },
   };
   const crypto = { getRandomValues: bytes => bytes.fill(7) };
   class FakeWebSocket { constructor(url) { this.url = url; setImmediate(() => this.onopen()); } close() {} }
   await new AsyncFunction('chrome', 'document', 'setInterval', 'crypto', 'WebSocket', source)(chrome, document, () => {}, crypto, FakeWebSocket);
-  return { elements, shared: () => sharedTabs, paired: () => profileKey, messages };
+  return { elements, shared: () => store.sharedTabs, origins: () => store.sharedOrigins, paired: () => profileKey, messages };
 }
 
 (async () => {
@@ -42,12 +48,23 @@ async function setup(tab) {
   assert.ok(current.messages.includes('reconnect'));
   assert.equal(current.elements.status.textContent, 'Bridge: connected');
   assert.equal(current.elements.shared.children[0].textContent, 'No tabs shared');
+  assert.equal(current.elements.toggle.textContent, 'Share this tab');
   await current.elements.toggle.click();
   assert.deepEqual(current.shared(), [7]);
+  assert.deepEqual(current.origins(), { 7: 'https://example.com' }, 'sharing records the tab origin');
   assert.equal(current.elements.toggle.textContent, 'Stop sharing this tab');
   assert.equal(current.elements.shared.children[0].children[0].textContent, 'Example');
   await current.elements.shared.children[0].children[1].click();
   assert.deepEqual(current.shared(), []);
+  assert.deepEqual(current.origins(), {}, 'stopping removes the recorded origin');
+
+  const moved = await setup({ id: 7, title: 'Example', url: 'https://example.com/' }, { sharedTabs: [7], sharedOrigins: { 7: 'https://old.example' } });
+  assert.equal(moved.elements.toggle.textContent, 'Share this tab again', 'a tab shared from another origin must be shared again');
+  await moved.elements.toggle.click();
+  assert.deepEqual(moved.origins(), { 7: 'https://example.com' }, 're-sharing updates the recorded origin');
+  assert.deepEqual(moved.shared(), [7]);
+  assert.equal(moved.elements.toggle.textContent, 'Stop sharing this tab');
+
   const internal = await setup({ id: 8, title: 'New tab', url: 'chrome://newtab/' });
   assert.equal(internal.elements.toggle.disabled, true);
   assert.equal(internal.elements.unavailable.hidden, false);

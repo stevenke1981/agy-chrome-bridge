@@ -3,23 +3,44 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const { createHmac, webcrypto } = require('node:crypto');
 
+const PROFILE_MISMATCH_TEXT = String.raw`This Chrome profile is not the paired one. Run: node "%LOCALAPPDATA%\agy-chrome-bridge\bridge\bridge.cjs" --unpair`;
+const DEFAULT_CLOSE_TEXT = 'AGY is not running or local connection is blocked';
+const COMMAND_MS = 15000;
+const OPERATION_MS = 25000;
+const tick = () => new Promise(resolve => setImmediate(resolve));
+
 function event() {
   const callbacks = new Set();
   return { addListener: f => callbacks.add(f), removeListener: f => callbacks.delete(f), emit: (...args) => { for (const f of [...callbacks]) f(...args); } };
 }
-const updated = event();
+
 const debuggerEvents = event();
+const alarmEvents = event();
+const alarms = [];
+const delays = { command: COMMAND_MS, operation: OPERATION_MS };
 let connection;
+let socketCount = 0;
 const opens = [];
 const waitOpen = () => new Promise(resolve => opens.push(resolve));
 let resolveProof;
 class FakeWebSocket {
   static OPEN = 1;
   static CLOSING = 2;
-  constructor(url) { this.url = url; this.readyState = 0; this.sent = []; connection = this; setImmediate(() => { this.readyState = 1; this.onopen(); opens.shift()?.(this); }); }
+  constructor(url) { this.url = url; this.readyState = 0; this.sent = []; connection = this; socketCount++; setImmediate(() => { this.readyState = 1; this.onopen(); opens.shift()?.(this); }); }
   send(value) { const message = JSON.parse(value); this.sent.push(message); if (message.type === 'proof') resolveProof?.(message); }
   close() { this.readyState = 3; this.onclose(); }
 }
+
+let sessionStore = { sharedTabs: [7], sharedOrigins: { 7: 'https://example.com' } };
+let tabUrl = 'https://example.com/';
+let pageOrigin; // when set, the page reports this origin instead of the tab URL's (navigation raced the attach)
+const attached = new Set();
+let attachCount = 0;
+let detachCount = 0;
+let hangMethod;
+let slowMethod;
+let slowMs = 0;
+let navigateCalls = 0;
 let images = [];
 let newPageLoaded = false;
 let download = false;
@@ -31,54 +52,112 @@ let redirectFocus = false;
 let typedText = [];
 let keyEvents = [];
 let scrollEvents = [];
+let scrolledWith = [];
+
+function readSession(defaults) {
+  return Object.fromEntries(Object.entries(defaults).map(([key, fallback]) => [key, sessionStore[key] ?? fallback]));
+}
+
+async function fakeCommand(target, method, params) {
+  if (method === 'Page.captureScreenshot') return { data: images.shift() };
+  if (method === 'Input.dispatchMouseEvent') { if (params.type === 'mouseWheel') scrollEvents.push(params); else mouseEvents++; return {}; }
+  if (method === 'Input.dispatchKeyEvent') { keyEvents.push(params); return {}; }
+  if (method === 'Input.insertText') { typedText.push(params.text); return {}; }
+  if (method === 'Runtime.evaluate') return evaluate(params);
+  if (method === 'Page.navigate') return navigate(target);
+  return {};
+}
+
+function evaluate(params) {
+  const element = {
+    getBoundingClientRect: () => ({ x: 10, y: 10, width: 40, height: 20 }),
+    scrollIntoView(options) { scrolledWith.push(options); },
+    focus() { document.activeElement = redirectFocus ? {} : element; },
+    matches: () => editable,
+    contains: hit => hit === element,
+  };
+  const document = { querySelector: () => element, querySelectorAll: selector => selector === '#duplicate' ? [element, element] : [element], elementFromPoint: () => obstructed ? {} : element };
+  if (duplicateFixture) {
+    const html = { nodeType: 1, localName: 'html', parentElement: null };
+    const body = { nodeType: 1, localName: 'body', parentElement: html };
+    html.children = [body];
+    const button = text => ({ nodeType: 1, id: 'duplicate', localName: 'button', tagName: 'BUTTON', parentElement: body, offsetWidth: 10, offsetHeight: 10, innerText: text, getAttribute: () => null });
+    const buttons = [button('Delete'), button('Save')];
+    body.children = buttons;
+    document.body = { innerText: 'Delete Save' };
+    document.title = 'Duplicate identifiers';
+    document.querySelectorAll = selector => selector === '#duplicate' || selector.startsWith('a,button,') ? buttons : [];
+  }
+  try {
+    return { result: { value: vm.runInNewContext(params.expression, { document, CSS: { escape: x => x }, location: { href: tabUrl, origin: pageOrigin ?? new URL(tabUrl).origin }, window: { innerWidth: 800, innerHeight: 600 } }) } };
+  } catch (error) {
+    return { exceptionDetails: { text: error.message } };
+  }
+}
+
+function navigate(target) {
+  navigateCalls++;
+  if (download) return { isDownload: true };
+  debuggerEvents.emit(target, 'Page.lifecycleEvent', { name: 'load', loaderId: 'old' });
+  setImmediate(() => { newPageLoaded = true; debuggerEvents.emit(target, 'Page.lifecycleEvent', { name: 'load', loaderId: 'new' }); });
+  return { loaderId: 'new' };
+}
+
 const chrome = {
   runtime: { getURL: path => `chrome-extension://test/${path}`, onMessage: event(), onStartup: event(), onInstalled: event(), id: 'test' },
-  storage: { session: { get: async () => ({ sharedTabs: [7] }), set: async () => {} }, local: { get: async () => ({ profileKey: 'c'.repeat(64) }) } },
-  tabs: { get: async id => ({ id, url: 'https://example.com', title: 'Example' }), update: async (id, options) => {
-    updated.emit(id, { status: 'complete' }, { url: 'https://old.example/' });
-    setImmediate(() => { updated.emit(id, { status: 'loading', url: options.url }, { url: options.url }); updated.emit(id, { status: 'complete' }, { url: options.url }); });
-    return { url: 'https://old.example/', status: 'loading' };
-  }, onUpdated: updated, onRemoved: event() },
-  debugger: { attach: async () => {}, detach: async () => {}, onEvent: debuggerEvents, sendCommand: async (target, method, params) => {
-    if (method === 'Page.captureScreenshot') return { data: images.shift() };
-    if (method === 'Input.dispatchMouseEvent') { if (params.type === 'mouseWheel') scrollEvents.push(params); else mouseEvents++; return {}; }
-    if (method === 'Input.dispatchKeyEvent') { keyEvents.push(params); return {}; }
-    if (method === 'Input.insertText') { typedText.push(params.text); return {}; }
-    if (method === 'Runtime.evaluate') {
-      const element = { getBoundingClientRect: () => ({ x: 10, y: 10, width: 40, height: 20 }), scrollIntoView() {}, focus() { document.activeElement = redirectFocus ? {} : element; }, matches: () => editable, contains: hit => hit === element };
-      const document = { querySelector: () => element, querySelectorAll: selector => selector === '#duplicate' ? [element, element] : [element], elementFromPoint: () => obstructed ? {} : element };
-      if (duplicateFixture) {
-        const html = { nodeType: 1, localName: 'html', parentElement: null };
-        const body = { nodeType: 1, localName: 'body', parentElement: html };
-        html.children = [body];
-        const button = text => ({ nodeType: 1, id: 'duplicate', localName: 'button', tagName: 'BUTTON', parentElement: body, offsetWidth: 10, offsetHeight: 10, innerText: text, getAttribute: () => null });
-        const buttons = [button('Delete'), button('Save')];
-        body.children = buttons;
-        document.body = { innerText: 'Delete Save' };
-        document.title = 'Duplicate identifiers';
-        document.querySelectorAll = selector => selector === '#duplicate' || selector.startsWith('a,button,') ? buttons : [];
-      }
-      try { return { result: { value: vm.runInNewContext(params.expression, { document, CSS: { escape: x => x }, location: { href: 'https://example.com' }, window: { innerWidth: 800, innerHeight: 600 } }) } }; }
-      catch (error) { return { exceptionDetails: { text: error.message } }; }
-    }
-    if (method === 'Page.navigate') {
-      if (download) return { isDownload: true };
-      debuggerEvents.emit(target, 'Page.lifecycleEvent', { name: 'load', loaderId: 'old' });
-      setImmediate(() => { newPageLoaded = true; debuggerEvents.emit(target, 'Page.lifecycleEvent', { name: 'load', loaderId: 'new' }); });
-      return { loaderId: 'new' };
-    }
-    return {};
-  } },
+  alarms: { create: (name, info) => alarms.push({ name, info }), onAlarm: alarmEvents },
+  storage: {
+    session: { get: async defaults => readSession(defaults), set: async values => { Object.assign(sessionStore, values); } },
+    local: { get: async () => ({ profileKey: 'c'.repeat(64) }) },
+  },
+  tabs: { get: async id => ({ id, url: tabUrl, title: 'Example' }), onRemoved: event() },
+  debugger: {
+    attach: async target => {
+      if (attached.has(target.tabId)) throw new Error('Another debugger is already attached');
+      attached.add(target.tabId);
+      attachCount++;
+    },
+    detach: async target => { attached.delete(target.tabId); detachCount++; },
+    onEvent: debuggerEvents,
+    sendCommand: async (target, method, params) => {
+      if (method === hangMethod) return new Promise(() => {});
+      if (method === slowMethod) await new Promise(resolve => setTimeout(resolve, slowMs));
+      return fakeCommand(target, method, params);
+    },
+  },
 };
+
+const delayedTimer = (fn, ms) => {
+  const timer = setTimeout(fn, ms === COMMAND_MS ? delays.command : ms === OPERATION_MS ? delays.operation : ms);
+  timer.unref();
+  return timer;
+};
+
 const firstOpen = waitOpen();
-const context = vm.createContext({ chrome, URL, WebSocket: FakeWebSocket, crypto: webcrypto, TextEncoder, fetch: async () => ({ ok: true, json: async () => ({ token: 'a'.repeat(64) }) }), setTimeout: (fn, ms) => { const timer = setTimeout(fn, ms); timer.unref(); return timer; }, clearTimeout, setInterval: () => 1, clearInterval: () => {}, console });
+const context = vm.createContext({ chrome, URL, WebSocket: FakeWebSocket, crypto: webcrypto, TextEncoder, fetch: async () => ({ ok: true, json: async () => ({ token: 'a'.repeat(64) }) }), setTimeout: delayedTimer, clearTimeout, setInterval: () => 1, clearInterval: () => {}, console });
 vm.runInContext(fs.readFileSync('extension/background.js', 'utf8'), context);
 const run = (method, params) => vm.runInContext('run', context)(method, params);
+
+const currentStatus = () => {
+  let value;
+  chrome.runtime.onMessage.emit({ type: 'status' }, { id: 'test' }, result => { value = result.status; });
+  return value;
+};
+
+// Shimmed timers are unref'd so the worker's own timers do not keep the test alive; hold the loop open explicitly.
+const keepAlive = setInterval(() => {}, 1000);
+let finished = false;
+process.on('exit', () => {
+  if (!finished) { console.error('Extension checks did not complete'); process.exitCode = 1; }
+});
+
 (async () => {
-  let reported;
   await firstOpen;
-  chrome.runtime.onMessage.emit({ type: 'status' }, { id: 'test' }, result => { reported = result.status; });
-  assert.equal(reported, 'connecting');
+  assert.deepEqual(JSON.parse(JSON.stringify(alarms)), [{ name: 'reconnect', info: { periodInMinutes: 0.5 } }], 'the reconnect alarm is created at worker start');
+  chrome.runtime.onStartup.emit();
+  chrome.runtime.onInstalled.emit();
+  assert.equal(alarms.length, 3, 'startup and install refresh the reconnect alarm');
+  assert.equal(currentStatus(), 'connecting');
   assert.equal(connection.url, 'ws://127.0.0.1:38745/bridge');
   assert.equal(connection.sent[0].type, 'hello');
   assert.equal('token' in connection.sent[0], false, 'never send the secret to an unverified server');
@@ -102,16 +181,19 @@ const run = (method, params) => vm.runInContext('run', context)(method, params);
   const response = await clientProof;
   assert.equal(response.profileKey, 'c'.repeat(64));
   connection.onmessage({ data: JSON.stringify({ type: 'ready' }) });
-  chrome.runtime.onMessage.emit({ type: 'status' }, { id: 'test' }, result => { reported = result.status; });
-  assert.equal(reported, 'connected');
+  assert.equal(currentStatus(), 'connected');
   connection.onmessage({ data: 'null' });
   assert.equal(connection.readyState, 3, 'invalid server messages must close the connection');
-  chrome.runtime.onMessage.emit({ type: 'status' }, { id: 'test' }, result => { reported = result.status; });
-  assert.equal(reported, 'Local bridge sent invalid data');
-  assert.equal((await run('browser_tabs', {}))[0].id, 7);
+  assert.equal(currentStatus(), 'Local bridge sent invalid data');
+
+  const [listed] = await run('browser_tabs', {});
+  assert.equal(listed.id, 7);
+  assert.equal(listed.sharedOrigin, 'https://example.com', 'browser_tabs reports the origin recorded at share time');
   await assert.rejects(() => run('browser_snapshot', { tabId: 8 }), /not shared/);
   await assert.rejects(() => run('browser_navigate', { tabId: 7, url: 'file:///secret' }), /HTTP and HTTPS/);
-  assert.equal((await run('browser_navigate', { tabId: 7, url: 'https://example.org/' })).navigated, 'https://example.org/');
+  await assert.rejects(() => run('browser_navigate', { tabId: 7, url: 'https://example.org/' }), /outside the shared origin https:\/\/example\.com/);
+  assert.equal(navigateCalls, 0, 'a cross-origin URL never reaches the page');
+  assert.equal((await run('browser_navigate', { tabId: 7, url: 'https://example.com/next' })).navigated, 'https://example.com/next');
   assert.equal(newPageLoaded, true);
   duplicateFixture = true;
   const snapshot = await run('browser_snapshot', { tabId: 7 });
@@ -125,6 +207,7 @@ const run = (method, params) => vm.runInContext('run', context)(method, params);
   obstructed = false;
   await run('browser_click', { tabId: 7, selector: '#target' });
   assert.equal(mouseEvents, 2, 'an unobstructed element receives a complete click');
+  assert.deepEqual(JSON.parse(JSON.stringify(scrolledWith.at(-1))), { block: 'center', inline: 'center', behavior: 'instant' }, 'elements are centred before the hit test');
   editable = true;
   redirectFocus = true;
   await assert.rejects(() => run('browser_type', { tabId: 7, selector: '#target', text: 'test' }), /focus/);
@@ -152,11 +235,108 @@ const run = (method, params) => vm.runInContext('run', context)(method, params);
   assert.equal(scrollEvents[0].x, 400);
   await assert.rejects(() => run('browser_scroll', { tabId: 7, deltaY: 4000 }), /Scroll distances/);
   download = true;
-  await assert.rejects(() => run('browser_navigate', { tabId: 7, url: 'https://example.org/file.zip' }), /download/);
+  await assert.rejects(() => run('browser_navigate', { tabId: 7, url: 'https://example.com/file.zip' }), /download/);
   download = false;
   images = ['x'.repeat(800001), 'y'.repeat(800001)];
   await assert.rejects(() => run('browser_screenshot', { tabId: 7 }), /too large/);
   images = ['x'.repeat(800001), 'small'];
   assert.equal((await run('browser_screenshot', { tabId: 7 })).data, 'small');
+
+  // Concurrent operations on one tab are serialized: both attach in turn instead of failing.
+  duplicateFixture = true;
+  const attachesBefore = attachCount;
+  const pair = await Promise.all([run('browser_snapshot', { tabId: 7 }), run('browser_snapshot', { tabId: 7 })]);
+  duplicateFixture = false;
+  assert.ok(pair.every(result => result.elements.length === 2), 'both concurrent snapshots succeed');
+  assert.equal(attachCount - attachesBefore, 2);
+  assert.equal(attached.size, 0);
+
+  // A hung command times out and the debugger is still detached.
+  delays.command = 20;
+  hangMethod = 'Runtime.evaluate';
+  const detachesBefore = detachCount;
+  await assert.rejects(() => run('browser_scroll', { tabId: 7, deltaY: 10 }), /did not respond/);
+  hangMethod = undefined;
+  delays.command = COMMAND_MS;
+  assert.equal(attached.size, 0, 'a timed-out command detaches the debugger');
+  assert.equal(detachCount - detachesBefore, 1);
+
+  // A slow operation exceeds the operation budget; it reports a timeout and detaches after its last command.
+  delays.operation = 20;
+  slowMethod = 'Runtime.evaluate';
+  slowMs = 60;
+  await assert.rejects(() => run('browser_scroll', { tabId: 7, deltaY: 10 }), /timed out/);
+  await new Promise(resolve => setTimeout(resolve, 150));
+  slowMethod = undefined;
+  slowMs = 0;
+  delays.operation = OPERATION_MS;
+  assert.equal(attached.size, 0, 'a timed-out operation still detaches');
+
+  // A timed-out operation is cancelled: neither it nor a queued operation acts after the caller was told it failed.
+  delays.operation = 20;
+  slowMethod = 'Runtime.evaluate';
+  slowMs = 60;
+  const scrollsBefore = scrollEvents.length;
+  const clicksBefore = mouseEvents;
+  const slow = run('browser_scroll', { tabId: 7, deltaY: 10 });
+  const queued = run('browser_click', { tabId: 7, selector: '#target' });
+  await assert.rejects(() => slow, /timed out/);
+  await assert.rejects(() => queued, /timed out/);
+  await new Promise(resolve => setTimeout(resolve, 250));
+  slowMethod = undefined;
+  slowMs = 0;
+  delays.operation = OPERATION_MS;
+  assert.equal(scrollEvents.length, scrollsBefore, 'a timed-out scroll does not run later');
+  assert.equal(mouseEvents, clicksBefore, 'a queued click whose caller timed out never runs');
+  assert.equal(attached.size, 0, 'cancelled operations leave the debugger detached');
+
+  // Origin re-check after attach: a navigation that races the attach is refused before any action.
+  pageOrigin = 'https://evil.example';
+  const scrollsBeforeRace = scrollEvents.length;
+  await assert.rejects(() => run('browser_scroll', { tabId: 7, deltaY: 10 }), /Tab moved to https:\/\/evil\.example/);
+  pageOrigin = undefined;
+  assert.equal(scrollEvents.length, scrollsBeforeRace, 'no action on a tab that moved during attach');
+  assert.equal(attached.size, 0);
+
+  // Origin lock: a tab that moved is refused before attaching; re-sharing records the new origin.
+  const attachesBeforeMove = attachCount;
+  tabUrl = 'https://other.example/';
+  await assert.rejects(() => run('browser_snapshot', { tabId: 7 }), error => error.message === 'Tab moved to https://other.example; share it again from the extension popup.');
+  assert.equal(attachCount, attachesBeforeMove, 'a moved tab is not attached');
+  const [moved] = await run('browser_tabs', {});
+  assert.equal(moved.sharedOrigin, 'https://example.com');
+  await chrome.storage.session.set({ sharedOrigins: { 7: 'https://other.example' } });
+  assert.equal((await run('browser_scroll', { tabId: 7, deltaY: 10 })).ok, true, 're-sharing updates the recorded origin');
+  await chrome.storage.session.set({ sharedOrigins: { 7: 'https://example.com' } });
+  tabUrl = 'https://example.com/';
+
+  // Reconnect alarm and close codes.
+  const socketsBefore = socketCount;
+  alarmEvents.emit({ name: 'unrelated' });
+  await tick();
+  assert.equal(socketCount, socketsBefore, 'other alarms do not reconnect');
+  const reopened = waitOpen();
+  alarmEvents.emit({ name: 'reconnect' });
+  await reopened;
+  assert.equal(socketCount, socketsBefore + 1, 'the reconnect alarm opens a socket when none is active');
+  connection.onclose({ code: 4001, reason: 'profile-mismatch' });
+  assert.equal(currentStatus(), PROFILE_MISMATCH_TEXT, 'a pairing mismatch shows the unpair instruction');
+  alarmEvents.emit({ name: 'reconnect' });
+  await tick();
+  assert.equal(socketCount, socketsBefore + 1, 'after a pairing mismatch the alarm does not retry');
+  assert.equal(currentStatus(), PROFILE_MISMATCH_TEXT);
+  const reopenedAgain = waitOpen();
+  chrome.runtime.onMessage.emit({ type: 'reconnect' }, { id: 'test' }, () => {});
+  await reopenedAgain;
+  connection.onclose({ code: 1008, reason: 'bad' });
+  assert.equal(currentStatus(), DEFAULT_CLOSE_TEXT, 'other close codes keep the generic status');
+  const finalOpen = waitOpen();
+  alarmEvents.emit({ name: 'reconnect' });
+  await finalOpen;
+  alarmEvents.emit({ name: 'reconnect' });
+  await tick();
+  assert.equal(socketCount, socketsBefore + 3, 'the alarm does not replace an open socket');
+  finished = true;
+  clearInterval(keepAlive);
   console.log('Extension checks passed');
-})().catch(error => { console.error(error); process.exitCode = 1; });
+})().catch(error => { finished = true; clearInterval(keepAlive); console.error(error); process.exitCode = 1; });

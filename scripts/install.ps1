@@ -33,6 +33,7 @@ $root = Join-Path $env:LOCALAPPDATA 'agy-chrome-bridge'
 $bridgeDirectory = Join-Path $root 'bridge'
 $bridgePath = Join-Path $bridgeDirectory 'bridge.cjs'
 $gatewayPath = Join-Path $bridgeDirectory 'gateway.cjs'
+$upgrading = Test-Path -LiteralPath $bridgePath
 $legacyBin = Join-Path $root 'bin\agy-chrome-bridge.exe'
 $installedExtension = Join-Path $root 'extension'
 $manifestPath = Join-Path $root 'com.agy_chrome_bridge.json'
@@ -49,8 +50,18 @@ if (Test-Path -LiteralPath $installedConfig) {
     [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
     $pairToken = [BitConverter]::ToString($bytes).Replace('-', '').ToLowerInvariant()
 }
+function Remove-OldBackups([string]$Directory, [string]$Filter) {
+    $stale = Get-ChildItem -LiteralPath $Directory -Filter $Filter -Force -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -Skip 2
+    foreach ($item in $stale) {
+        try { Remove-Item -LiteralPath $item.FullName -Recurse -Force -ErrorAction Stop }
+        catch { Write-Warning "Could not remove old backup $($item.FullName): $($_.Exception.Message)" }
+    }
+}
 if (Test-Path -LiteralPath $configPath) {
-    $config = Get-Content -Raw -Encoding UTF8 -LiteralPath $configPath | ConvertFrom-Json
+    try { $config = Get-Content -Raw -Encoding UTF8 -LiteralPath $configPath | ConvertFrom-Json }
+    catch {
+        throw ('Cannot read {0} as JSON; it may contain comments or trailing commas. No changes made. Add the server manually with: agy mcp add agy-chrome-bridge -- "{1}" "{2}" --mcp' -f $configPath, $nodePath, $bridgePath)
+    }
     $existing = $config.mcpServers.'agy-chrome-bridge'
     if ($existing) {
         $legacy = $existing.command -eq $legacyBin
@@ -65,12 +76,14 @@ $nodeProcesses = Get-CimInstance Win32_Process -Filter "Name='node.exe'"
 if ($nodeProcesses | Where-Object { $_.CommandLine -and $_.CommandLine.Contains($bridgePath) -and $_.CommandLine.Contains('--mcp') }) {
     throw 'The bridge is running. Exit AGY CLI and IDE sessions before upgrading. No changes made.'
 }
-if ($nodeProcesses | Where-Object { $_.CommandLine -and $_.CommandLine.Contains($gatewayPath) }) {
+$gatewayProcesses = @($nodeProcesses | Where-Object { $_.CommandLine -and $_.CommandLine.Contains($gatewayPath) })
+if ($gatewayProcesses.Count -gt 0) {
+    $killHint = 'If it cannot be stopped, end node PID {0} manually (Stop-Process -Id {0} -Force) and run this installer again.' -f ($gatewayProcesses.ProcessId -join ', ')
     & $nodePath $bridgePath --shutdown
-    if ($LASTEXITCODE -ne 0) { throw 'Could not stop the previous gateway. No changes made.' }
+    if ($LASTEXITCODE -ne 0) { throw "Could not stop the previous gateway. No changes made. $killHint" }
     Start-Sleep -Milliseconds 300
     if (Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -and $_.CommandLine.Contains($gatewayPath) }) {
-        throw 'The previous gateway is still running. No changes made.'
+        throw "The previous gateway is still running. No changes made. $killHint"
     }
 }
 New-Item -ItemType Directory -Force -Path $root | Out-Null
@@ -141,5 +154,10 @@ try {
 } finally {
     if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
 }
+Remove-OldBackups $root 'bridge.backup_*'
+Remove-OldBackups $root 'extension.backup_*'
+Remove-OldBackups $root 'com.agy_chrome_bridge.json.backup_*'
+Remove-OldBackups (Split-Path -Parent $configPath) 'mcp_config.json.backup_agy_chrome_*'
 Write-Output "Installed Node bridge: $bridgePath"
 Write-Output "Load unpacked extension in the selected Chrome profile: $installedExtension"
+if ($upgrading) { Write-Output 'Reload the extension in chrome://extensions in each profile where it is loaded, so the updated background script takes effect.' }
