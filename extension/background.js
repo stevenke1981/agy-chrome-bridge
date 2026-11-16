@@ -125,9 +125,10 @@ async function connect() {
   }, 20000);
 }
 
-function withTimeout(promise, ms, message) {
+function withTimeout(promise, ms, message, isOperation = false) {
   let timer;
-  const expired = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(message)), ms); });
+  const timeoutError = () => Object.assign(new Error(message), { isOperationTimeout: isOperation });
+  const expired = new Promise((_, reject) => { timer = setTimeout(() => reject(timeoutError()), ms); });
   return Promise.race([promise, expired]).finally(() => clearTimeout(timer));
 }
 
@@ -335,7 +336,8 @@ async function runOnSharedTab(method, params, ctx) {
   const origin = await verifiedOrigin(params.tabId);
   return withDebugger(params.tabId, async target => {
     targetContexts.set(target, ctx);
-    await assertOriginAfterAttach(target, origin);
+    // navigate is already limited to the shared origin, and must still work from an error or hung page.
+    if (method !== 'browser_navigate') await assertOriginAfterAttach(target, origin);
     return runBrowserOperation(target, method, params, origin);
   });
 }
@@ -345,9 +347,9 @@ async function run(method, params) {
   const ctx = { expired: false };
   const task = serializeForTab(params.tabId, () => runOnSharedTab(method, params, ctx));
   try {
-    return await withTimeout(task, OPERATION_TIMEOUT_MS, `Browser operation timed out after ${OPERATION_TIMEOUT_MS / 1000} s.`);
+    return await withTimeout(task, OPERATION_TIMEOUT_MS, `Browser operation timed out after ${OPERATION_TIMEOUT_MS / 1000} s.`, true);
   } catch (error) {
-    if (!ctx.expired && /timed out after/.test(error.message)) {
+    if (!ctx.expired && error.isOperationTimeout) {
       ctx.expired = true;
       if (Number.isInteger(params.tabId)) chrome.debugger.detach({ tabId: params.tabId }).catch(() => {});
     }
