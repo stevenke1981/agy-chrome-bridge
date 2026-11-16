@@ -146,7 +146,7 @@ function mcp() {
     if (request.method === 'initialize') {
       const offered = request.params?.protocolVersion;
       const protocolVersion = ['2024-11-05', '2025-03-26', '2025-06-18'].includes(offered) ? offered : '2025-06-18';
-      response = { result: { protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'agy-chrome-bridge', version: '0.2.0' } } };
+      response = { result: { protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'agy-chrome-bridge', version: require('../extension/manifest.json').version } } };
     } else if (request.method === 'ping') response = { result: {} };
     else if (request.method === 'tools/list') response = { result: { tools } };
     else if (request.method === 'tools/call') {

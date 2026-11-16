@@ -14,3 +14,4 @@ jobs:
       - run: node tests/extension_test.cjs
       - run: node tests/popup_test.cjs
       - run: python tests/installer_test.py
+      - run: python scripts/package.py

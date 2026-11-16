@@ -33,7 +33,7 @@ if (Test-Path -LiteralPath $configPath) {
     $existing = $config.mcpServers.'agy-chrome-bridge'
     if ($existing) {
         $legacy = $existing.command -eq $legacyBin
-        $ours = $existing.command -eq $nodePath -and @($existing.args).Count -eq 2 -and $existing.args[0] -eq $bridgePath -and $existing.args[1] -eq '--mcp'
+        $ours = $existing.command -and (Split-Path -Leaf $existing.command) -eq 'node.exe' -and @($existing.args).Count -eq 2 -and $existing.args[0] -eq $bridgePath -and $existing.args[1] -eq '--mcp'
         if (-not $legacy -and -not $ours) { throw 'A different MCP server already owns agy-chrome-bridge. No changes made.' }
     }
 }

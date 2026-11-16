@@ -12,6 +12,26 @@ SCRIPT = Path('scripts/install.ps1').resolve()
 
 
 class InstallerTest(unittest.TestCase):
+    def test_upgrades_existing_bridge_when_node_path_changes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            local = root / 'local'
+            profile = root / 'profile'
+            bridge = local / 'agy-chrome-bridge'
+            config = profile / '.gemini' / 'config' / 'mcp_config.json'
+            config.parent.mkdir(parents=True)
+            old_node = root / 'previous_node' / 'node.exe'
+            config.write_text(json.dumps({'mcpServers': {'agy-chrome-bridge': {'command': str(old_node), 'args': [str(bridge / 'bridge' / 'bridge.cjs'), '--mcp']}}}))
+            (root / 'agy.cmd').write_text('@exit /b 0\n')
+            key_name = 'Software\\AGYChromeBridgeTests\\' + uuid.uuid4().hex
+            env = {**os.environ, 'LOCALAPPDATA': str(local), 'USERPROFILE': str(profile), 'PATH': str(root) + os.pathsep + os.environ['PATH']}
+            try:
+                result = subprocess.run(['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(SCRIPT), '-RegistryPath', 'HKCU:\\' + key_name], capture_output=True, text=True, env=env, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertTrue((bridge / 'bridge' / 'host.cmd').is_file())
+            finally:
+                subprocess.run(['reg', 'delete', 'HKCU\\' + key_name, '/f'], capture_output=True)
+
     def test_migrates_legacy_configuration_to_existing_node(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

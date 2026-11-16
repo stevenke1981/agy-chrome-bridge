@@ -49,6 +49,8 @@ class BridgeTest(unittest.TestCase):
         self.mcp.stdin.flush()
         result = self.request({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {'protocolVersion': '2024-11-05'}})
         self.assertEqual(result['result']['protocolVersion'], '2024-11-05')
+        manifest_version = json.loads(Path('extension/manifest.json').read_text(encoding='utf-8'))['version']
+        self.assertEqual(result['result']['serverInfo']['version'], manifest_version)
         result = self.request({'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list'})
         self.assertIn('browser_snapshot', [tool['name'] for tool in result['result']['tools']])
 
