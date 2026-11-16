@@ -3,6 +3,7 @@ const label = document.querySelector('#tab');
 const button = document.querySelector('#toggle');
 const reconnect = document.querySelector('#reconnect');
 const sharedList = document.querySelector('#shared');
+document.querySelector('#version').textContent = `Version ${chrome.runtime.getManifest().version}`;
 const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 label.textContent = tab?.title || 'No current tab';
 const canShare = Boolean(tab?.id && /^https?:\/\//i.test(tab.url || ''));

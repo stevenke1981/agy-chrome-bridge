@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const source = fs.readFileSync('extension/popup.js', 'utf8');
+const manifest = JSON.parse(fs.readFileSync('extension/manifest.json', 'utf8'));
 
 function element() {
   return {
@@ -15,12 +16,12 @@ function element() {
 }
 
 async function setup(tab) {
-  const elements = Object.fromEntries(['status', 'tab', 'toggle', 'reconnect', 'shared', 'unavailable', 'diagnose', 'diagnostic'].map(id => [id, element()]));
+  const elements = Object.fromEntries(['version', 'status', 'tab', 'toggle', 'reconnect', 'shared', 'unavailable', 'diagnose', 'diagnostic'].map(id => [id, element()]));
   const document = { querySelector: selector => elements[selector.slice(1)], createElement: element };
   let sharedTabs = [];
   const chrome = {
     tabs: { query: async () => [tab], get: async id => ({ ...tab, id }) },
-    runtime: { sendMessage: async () => ({ status: 'connected' }) },
+    runtime: { getManifest: () => manifest, sendMessage: async () => ({ status: 'connected' }) },
     storage: { session: { get: async () => ({ sharedTabs }), set: async value => { sharedTabs = value.sharedTabs; } } },
   };
   await new AsyncFunction('chrome', 'document', 'setInterval', source)(chrome, document, () => {});
@@ -29,6 +30,7 @@ async function setup(tab) {
 
 (async () => {
   const current = await setup({ id: 7, title: 'Example', url: 'https://example.com/' });
+  assert.equal(current.elements.version.textContent, `Version ${manifest.version}`);
   assert.equal(current.elements.status.textContent, 'Bridge: connected');
   assert.equal(current.elements.shared.children[0].textContent, 'No tabs shared');
   await current.elements.toggle.click();
