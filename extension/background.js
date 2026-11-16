@@ -5,7 +5,7 @@ const RECONNECT_DELAY_MS = 5000;
 const RECONNECT_ALARM = 'reconnect';
 const RECONNECT_ALARM_MINUTES = 0.5;
 const PROFILE_MISMATCH_CLOSE_CODE = 4001;
-const PROFILE_MISMATCH_STATUS = 'Another Chrome profile is already paired. To use this one, run: node "%LOCALAPPDATA%\\agy-chrome-bridge\\bridge\\bridge.cjs" --unpair';
+const PROFILE_MISMATCH_STATUS = 'This profile is not the paired one (another profile paired first, or the extension was reinstalled). To pair this one, run: node "%LOCALAPPDATA%\\agy-chrome-bridge\\bridge\\bridge.cjs" --unpair';
 const DEFAULT_CLOSE_STATUS = 'AGY is not running or local connection is blocked';
 const NOT_SHARED_MESSAGE = 'Tab is not shared. Open the extension in that tab and select Share this tab.';
 const MAX_SCREENSHOT_LENGTH = 800000;
@@ -70,6 +70,7 @@ function scheduleReconnectAlarm() {
 }
 
 function startBridge() {
+  setStatus('connecting');
   scheduleReconnectAlarm();
   connect();
 }

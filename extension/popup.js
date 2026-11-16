@@ -76,7 +76,8 @@ function describe(text) {
   return { headline: 'Not connected', state: 'bad', detail: text };
 }
 function showStatus(view) {
-  status.textContent = view.headline;
+  // Rewrite only on change so the aria-live region does not re-announce every second.
+  if (status.textContent !== view.headline) status.textContent = view.headline;
   pill.setAttribute('data-state', view.state);
   detail.textContent = view.detail || '';
   detail.hidden = !view.detail;

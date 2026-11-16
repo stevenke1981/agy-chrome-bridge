@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const { createHmac, webcrypto } = require('node:crypto');
 
-const PROFILE_MISMATCH_TEXT = String.raw`Another Chrome profile is already paired. To use this one, run: node "%LOCALAPPDATA%\agy-chrome-bridge\bridge\bridge.cjs" --unpair`;
+const PROFILE_MISMATCH_TEXT = String.raw`This profile is not the paired one (another profile paired first, or the extension was reinstalled). To pair this one, run: node "%LOCALAPPDATA%\agy-chrome-bridge\bridge\bridge.cjs" --unpair`;
 const DEFAULT_CLOSE_TEXT = 'AGY is not running or local connection is blocked';
 const COMMAND_MS = 15000;
 const OPERATION_MS = 25000;

@@ -80,5 +80,11 @@ async function setup(tab, initial = {}, bridgeStatus = 'connected') {
   assert.equal(refused.elements.status.textContent, 'Not connected');
   assert.equal(refused.elements.pill.attributes['data-state'], 'bad');
   assert.equal(refused.elements.detail.textContent, mismatch, 'errors show the background detail');
+  const starting = await setup({ id: 9, title: 'Example', url: 'https://example.com/' }, {}, 'connecting');
+  assert.equal(starting.elements.status.textContent, 'Connecting…');
+  assert.equal(starting.elements.pill.attributes['data-state'], 'busy');
+  const missing = await setup({ id: 9, title: 'Example', url: 'https://example.com/' }, {}, 'Install the bridge and load its installed extension folder');
+  assert.equal(missing.elements.pill.attributes['data-state'], 'bad');
+  assert.equal(missing.elements.detail.textContent, 'Install the bridge and load its installed extension folder');
   console.log('Popup checks passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });
