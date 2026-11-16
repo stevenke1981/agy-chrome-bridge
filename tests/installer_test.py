@@ -32,6 +32,10 @@ class InstallerTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertTrue((bridge / 'bridge' / 'gateway.cjs').is_file())
                 self.assertRegex(json.loads((bridge / 'extension' / 'bridge_config.json').read_text())['token'], r'^[a-f0-9]{64}$')
+                skill = profile / '.gemini' / 'config' / 'skills' / 'agy-chrome-bridge' / 'SKILL.md'
+                self.assertIn('name: agy-chrome-bridge', skill.read_text(encoding='utf-8'), 'the installer teaches AGY with a global skill')
+                for size in (16, 32, 48, 128):
+                    self.assertTrue((bridge / 'extension' / 'icons' / f'icon{size}.png').is_file())
             finally:
                 subprocess.run(['reg', 'delete', 'HKCU\\' + key_name, '/f'], capture_output=True)
 

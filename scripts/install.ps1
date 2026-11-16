@@ -160,6 +160,17 @@ Remove-OldBackups $root 'bridge.backup_*'
 Remove-OldBackups $root 'extension.backup_*'
 Remove-OldBackups $root 'com.agy_chrome_bridge.json.backup_*'
 Remove-OldBackups (Split-Path -Parent $configPath) 'mcp_config.json.backup_agy_chrome_*'
+# Teach AGY when and how to use the browser_* tools: a global skill next to the MCP configuration.
+$skillRelative = 'skill\agy-chrome-bridge\SKILL.md'
+$skillSource = if (Test-Path (Join-Path $PSScriptRoot $skillRelative)) { Join-Path $PSScriptRoot $skillRelative } else { Join-Path (Join-Path $PSScriptRoot '..') $skillRelative }
+$skillDirectory = Join-Path $env:USERPROFILE '.gemini\config\skills\agy-chrome-bridge'
+if (Test-Path -LiteralPath $skillSource) {
+    try {
+        New-Item -ItemType Directory -Path $skillDirectory -Force | Out-Null
+        Copy-Item -LiteralPath $skillSource -Destination (Join-Path $skillDirectory 'SKILL.md') -Force
+        Write-Output "Installed AGY skill: $skillDirectory"
+    } catch { Write-Warning "Could not install the AGY skill to ${skillDirectory}: $($_.Exception.Message)" }
+} else { Write-Warning 'AGY skill file not found; skipped. The MCP tools still work.' }
 Write-Output "Installed Node bridge: $bridgePath"
 Write-Output "Load unpacked extension in the selected Chrome profile: $installedExtension"
 if ($upgrading) { Write-Output 'Reload the extension in chrome://extensions in each profile where it is loaded, so the updated background script takes effect.' }

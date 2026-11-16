@@ -33,6 +33,7 @@ sources = {
     "extension/background.js": root / "extension" / "background.js",
     "extension/popup.html": root / "extension" / "popup.html",
     "extension/popup.js": root / "extension" / "popup.js",
+    "skill/agy-chrome-bridge/SKILL.md": root / "skill" / "agy-chrome-bridge" / "SKILL.md",
 }
 for size in (16, 32, 48, 128):
     sources[f"extension/icons/icon{size}.png"] = root / "extension" / "icons" / f"icon{size}.png"
