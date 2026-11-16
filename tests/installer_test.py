@@ -7,6 +7,7 @@ import tempfile
 import time
 import unittest
 import uuid
+import winreg
 from pathlib import Path
 
 SCRIPT = Path('scripts/install.ps1').resolve()
@@ -64,8 +65,9 @@ class InstallerTest(unittest.TestCase):
                 self.assertEqual(json.loads(config.read_text())['mcpServers']['other']['command'], 'other')
                 self.assertFalse(old_manifest.exists())
                 self.assertTrue(list(bridge.glob('com.agy_chrome_bridge.json.backup_*')))
-                current = subprocess.run(['reg', 'query', 'HKCU\\' + key_name, '/ve'], capture_output=True, text=True)
-                self.assertNotIn(str(old_manifest), current.stdout)
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_name) as key:
+                    with self.assertRaises(FileNotFoundError):
+                        winreg.QueryValueEx(key, '')
             finally:
                 subprocess.run(['reg', 'delete', 'HKCU\\' + key_name, '/f'], capture_output=True)
 
@@ -105,11 +107,9 @@ class InstallerTest(unittest.TestCase):
                 self.assertEqual(config.read_text(encoding='utf-8'), old_config)
                 self.assertFalse((extension / 'manifest.json').exists())
                 self.assertEqual(old_manifest.read_text(), 'old native host')
-                check = subprocess.run(['reg', 'query', 'HKCU\\' + key_name], capture_output=True, text=True)
-                self.assertEqual(check.returncode, 0)
-                self.assertIn(str(old_manifest), check.stdout)
-                self.assertIn('Marker', check.stdout)
-                self.assertIn('keep', check.stdout)
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_name) as key:
+                    self.assertEqual(winreg.QueryValueEx(key, '')[0], str(old_manifest))
+                    self.assertEqual(winreg.QueryValueEx(key, 'Marker')[0], 'keep')
             finally:
                 subprocess.run(['reg', 'delete', 'HKCU\\' + key_name, '/f'], capture_output=True)
 
