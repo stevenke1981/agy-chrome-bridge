@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width">
+  <title>AGY Chrome Bridge</title>
+  <style>
+    body { font: 14px system-ui; width: 310px; padding: 12px; color: #202124; }
+    h2 { margin-top: 0; } h3 { margin-bottom: 8px; } p { line-height: 1.4; }
+    button { padding: 8px 10px; cursor: pointer; } button:disabled { cursor: default; }
+    #status { color: #555; overflow-wrap: anywhere; } ul { padding-left: 20px; }
+    li { margin-bottom: 8px; overflow-wrap: anywhere; } li button { margin-left: 6px; }
+  </style>
+</head>
+<body>
+  <h2>AGY Chrome Bridge</h2>
+  <p id="version"></p>
+  <p id="status" aria-live="polite">Connecting…</p>
+  <button id="reconnect">Reconnect</button>
+  <button id="pair">Pair this Chrome profile</button>
+  <p>AGY can read and operate only the tabs you share in this Chrome profile. Sharing ends when Chrome closes.</p>
+  <h3>Current tab</h3><p id="tab"></p><button id="toggle" disabled>Share this tab</button>
+  <p id="unavailable" hidden>Open an HTTP or HTTPS page to share it.</p>
+  <h3>Shared tabs</h3><ul id="shared"></ul>
+  <p>In your chosen Chrome profile, pair once, then start AGY CLI or IDE to connect. Load the installed extension folder shown by the installer.</p>
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

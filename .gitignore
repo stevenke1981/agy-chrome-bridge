@@ -1,3 +1,5 @@
 /target/
 /dist/
+/node_modules/
+/extension/bridge_config.json
 result_*.md

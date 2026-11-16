@@ -1,0 +1,7 @@
+{
+  "name": "agy-chrome-bridge",
+  "private": true,
+  "dependencies": {
+    "ws": "8.23.0"
+  }
+}
