@@ -34,6 +34,8 @@ sources = {
     "extension/popup.html": root / "extension" / "popup.html",
     "extension/popup.js": root / "extension" / "popup.js",
 }
+for size in (16, 32, 48, 128):
+    sources[f"extension/icons/icon{size}.png"] = root / "extension" / "icons" / f"icon{size}.png"
 for name in (
     "index.js", "package.json", "LICENSE", "lib/buffer-util.js", "lib/constants.js",
     "lib/event-target.js", "lib/extension.js", "lib/limiter.js", "lib/permessage-deflate.js",

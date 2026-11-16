@@ -114,7 +114,7 @@ async function unpair() {
     return 1;
   }
   process.stdout.write(stopped ? 'Stopped the gateway.\n' : 'Gateway was not running.\n');
-  process.stdout.write(removePairing() ? 'Removed the paired Chrome profile. Pair the intended profile again from its extension popup.\n' : 'No paired Chrome profile to remove.\n');
+  process.stdout.write(removePairing() ? 'Removed the paired Chrome profile. The next Chrome profile whose extension connects is paired automatically.\n' : 'No paired Chrome profile to remove.\n');
   return 0;
 }
 

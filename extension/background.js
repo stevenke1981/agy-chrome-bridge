@@ -5,7 +5,7 @@ const RECONNECT_DELAY_MS = 5000;
 const RECONNECT_ALARM = 'reconnect';
 const RECONNECT_ALARM_MINUTES = 0.5;
 const PROFILE_MISMATCH_CLOSE_CODE = 4001;
-const PROFILE_MISMATCH_STATUS = 'This Chrome profile is not the paired one. Run: node "%LOCALAPPDATA%\\agy-chrome-bridge\\bridge\\bridge.cjs" --unpair';
+const PROFILE_MISMATCH_STATUS = 'Another Chrome profile is already paired. To use this one, run: node "%LOCALAPPDATA%\\agy-chrome-bridge\\bridge\\bridge.cjs" --unpair';
 const DEFAULT_CLOSE_STATUS = 'AGY is not running or local connection is blocked';
 const NOT_SHARED_MESSAGE = 'Tab is not shared. Open the extension in that tab and select Share this tab.';
 const MAX_SCREENSHOT_LENGTH = 800000;
@@ -48,6 +48,23 @@ function closeStatus(event, failure) {
   return failure || DEFAULT_CLOSE_STATUS;
 }
 
+function setStatus(next) {
+  status = next;
+  chrome.action?.setBadgeText({ text: next === 'connected' ? 'ON' : '' });
+  chrome.action?.setBadgeBackgroundColor?.({ color: '#1E8E3E' });
+}
+
+const toHex = bytes => [...bytes].map(byte => byte.toString(16).padStart(2, '0')).join('');
+
+// Pairing is automatic: each Chrome profile keeps one random key, and the gateway trusts the first profile it sees.
+async function ensureProfileKey() {
+  const { profileKey } = await chrome.storage.local.get('profileKey');
+  if (typeof profileKey === 'string' && /^[a-f0-9]{64}$/.test(profileKey)) return profileKey;
+  const created = toHex(crypto.getRandomValues(new Uint8Array(32)));
+  await chrome.storage.local.set({ profileKey: created });
+  return created;
+}
+
 function scheduleReconnectAlarm() {
   chrome.alarms.create(RECONNECT_ALARM, { periodInMinutes: RECONNECT_ALARM_MINUTES });
 }
@@ -61,7 +78,7 @@ async function connect() {
   if (connecting || isSocketActive()) return;
   connecting = true;
   clearTimeout(reconnectTimer);
-  status = 'connecting';
+  setStatus('connecting');
   let config;
   let profileKey;
   try {
@@ -69,16 +86,21 @@ async function connect() {
     if (!response.ok) throw new Error('missing configuration');
     config = await response.json();
     if (typeof config.token !== 'string' || !/^[a-f0-9]{64}$/.test(config.token)) throw new Error('invalid configuration');
-    ({ profileKey } = await chrome.storage.local.get('profileKey'));
   } catch {
-    status = 'Install the bridge and load its installed extension folder';
+    setStatus('Install the bridge and load its installed extension folder');
     connecting = false;
     return;
   }
-  if (typeof profileKey !== 'string' || !/^[a-f0-9]{64}$/.test(profileKey)) { status = 'Pair this Chrome profile in the popup'; connecting = false; return; }
+  try {
+    profileKey = await ensureProfileKey();
+  } catch {
+    setStatus('Cannot store the pairing key for this profile');
+    connecting = false;
+    return;
+  }
   const key = await crypto.subtle.importKey('raw', Uint8Array.from(config.token.match(/../g), hex => parseInt(hex, 16)), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
   const sign = async value => [...new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(value)))].map(byte => byte.toString(16).padStart(2, '0')).join('');
-  const clientNonce = [...crypto.getRandomValues(new Uint8Array(32))].map(byte => byte.toString(16).padStart(2, '0')).join('');
+  const clientNonce = toHex(crypto.getRandomValues(new Uint8Array(32)));
   const connection = new WebSocket('ws://127.0.0.1:38745/bridge');
   socket = connection;
   connecting = false;
@@ -101,7 +123,7 @@ async function connect() {
       connection.send(JSON.stringify({ type: 'proof', profileKey, proof: await sign(`client:${clientNonce}:${message.nonce}:${profileKey}`) }));
       return;
     }
-    if (message.type === 'ready' && serverVerified) { ready = true; status = 'connected'; return; }
+    if (message.type === 'ready' && serverVerified) { ready = true; setStatus('connected'); return; }
     if (!ready) { failure = 'Local bridge authentication failed'; connection.close(); return; }
     try {
       const result = await run(message.method, message.params || {});
@@ -113,13 +135,13 @@ async function connect() {
   connection.onclose = event => {
     clearInterval(heartbeat);
     if (socket !== connection) return;
-    status = closeStatus(event, failure);
+    setStatus(closeStatus(event, failure));
     socket = undefined;
     // A pairing mismatch will not fix itself; wait for the user to press Reconnect in the popup.
     pairingRefused = event?.code === PROFILE_MISMATCH_CLOSE_CODE;
     if (!pairingRefused) reconnectTimer = setTimeout(connect, RECONNECT_DELAY_MS);
   };
-  connection.onerror = () => { status = 'Local connection failed'; };
+  connection.onerror = () => { setStatus('Local connection failed'); };
   const heartbeat = setInterval(() => {
     if (connection.readyState === WebSocket.OPEN) connection.send(JSON.stringify({ type: 'ping' }));
   }, 20000);

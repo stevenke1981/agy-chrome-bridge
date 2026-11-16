@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const { createHmac, webcrypto } = require('node:crypto');
 
-const PROFILE_MISMATCH_TEXT = String.raw`This Chrome profile is not the paired one. Run: node "%LOCALAPPDATA%\agy-chrome-bridge\bridge\bridge.cjs" --unpair`;
+const PROFILE_MISMATCH_TEXT = String.raw`Another Chrome profile is already paired. To use this one, run: node "%LOCALAPPDATA%\agy-chrome-bridge\bridge\bridge.cjs" --unpair`;
 const DEFAULT_CLOSE_TEXT = 'AGY is not running or local connection is blocked';
 const COMMAND_MS = 15000;
 const OPERATION_MS = 25000;
@@ -103,12 +103,17 @@ function navigate(target) {
   return { loaderId: 'new' };
 }
 
+// Starts empty: the background must create this profile's pairing key on its own.
+const localStore = {};
+let localSets = 0;
+const badges = [];
 const chrome = {
+  action: { setBadgeText: details => badges.push(details.text), setBadgeBackgroundColor: () => {} },
   runtime: { getURL: path => `chrome-extension://test/${path}`, onMessage: event(), onStartup: event(), onInstalled: event(), id: 'test' },
   alarms: { create: (name, info) => alarms.push({ name, info }), onAlarm: alarmEvents },
   storage: {
     session: { get: async defaults => readSession(defaults), set: async values => { Object.assign(sessionStore, values); } },
-    local: { get: async () => ({ profileKey: 'c'.repeat(64) }) },
+    local: { get: async () => ({ ...localStore }), set: async values => { localSets++; Object.assign(localStore, values); } },
   },
   tabs: { get: async id => ({ id, url: tabUrl, title: 'Example' }), onRemoved: event() },
   debugger: {
@@ -179,12 +184,16 @@ process.on('exit', () => {
   const clientProof = new Promise(resolve => { resolveProof = resolve; });
   connection.onmessage({ data: JSON.stringify({ type: 'challenge', nonce, proof }) });
   const response = await clientProof;
-  assert.equal(response.profileKey, 'c'.repeat(64));
+  assert.match(response.profileKey, /^[a-f0-9]{64}$/, 'a pairing key is created automatically');
+  assert.equal(response.profileKey, localStore.profileKey, 'the automatic key is stored for this profile');
+  assert.equal(localSets, 1, 'the key is created once and reused on reconnects');
   connection.onmessage({ data: JSON.stringify({ type: 'ready' }) });
   assert.equal(currentStatus(), 'connected');
+  assert.equal(badges.at(-1), 'ON', 'the toolbar badge shows a live connection');
   connection.onmessage({ data: 'null' });
   assert.equal(connection.readyState, 3, 'invalid server messages must close the connection');
   assert.equal(currentStatus(), 'Local bridge sent invalid data');
+  assert.equal(badges.at(-1), '', 'the badge clears when the connection drops');
 
   const [listed] = await run('browser_tabs', {});
   assert.equal(listed.id, 7);
