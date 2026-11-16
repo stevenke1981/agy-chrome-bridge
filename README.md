@@ -18,9 +18,11 @@ In the intended Chrome profile, open `chrome://extensions`, turn on Developer mo
 
 Tell AGY to use `browser_tabs`, `browser_snapshot`, `browser_navigate`, `browser_click`, `browser_type`, `browser_key`, `browser_scroll`, or `browser_screenshot`. Observe the page before acting and inspect it again afterward; selectors can become stale as the page changes. The snapshot provides visible text and unique CSS selectors for interactive elements. Navigation waits for the page load event; a dynamic page may require additional time. Screenshots cover the viewport as JPEG images. The extension retries at lower quality and then fails with "Screenshot is too large" if the encoded image still exceeds 800,000 base64 characters. Messages between the extension, the gateway, and AGY are limited to 1 MiB. Chrome internal pages and `file:` URLs are unavailable.
 
-Each shared tab is locked to the origin it had when it was shared. If the tab moves to another origin, for example by following a link, its operations fail with `Tab moved to <origin>`; select **Share this tab** again in the popup to continue. `browser_navigate` likewise refuses URLs on other origins. Re-sharing updates the locked origin. Handle sign-in, CAPTCHAs and consequential decisions through the appropriate user approval or handoff.
+In manual mode (Auto-share off), each shared tab is locked to the origin it had when it was shared. If the tab moves to another origin, for example by following a link, its operations fail with `Tab moved to <origin>`; select **Share this tab** again in the popup to continue. `browser_navigate` likewise refuses URLs on other origins. Re-sharing updates the locked origin. Handle sign-in, CAPTCHAs and consequential decisions through the appropriate user approval or handoff.
 
 ## Security and privacy
+
+With Auto-share on (the default), AGY can read and operate every HTTP(S) tab in the paired profile, including signed-in sites. Turn Auto-share off in the popup when you want to limit AGY to tabs you share one by one.
 
 Sharing grants AGY the ability to read the tab and interact with it, including entering text and clicking buttons. Share only tabs intended for that session, and review consequential actions. Site content is untrusted and must not override the user's instructions. The extension requests Chrome's `debugger`, `tabs`, and `storage` permissions and access to `127.0.0.1`. No remote debugging port is enabled.
 

@@ -59,7 +59,9 @@ async function renderShares() {
     ? 'Auto-share is on: AGY can use any HTTP(S) tab in this profile. Turn it off to share tabs one by one.'
     : 'AGY can read and operate only the tabs you share. Sharing ends when Chrome closes.';
   if (autoShare) {
-    document.querySelector('#unavailable').hidden = canShare;
+    const unavailable = document.querySelector('#unavailable');
+    unavailable.hidden = canShare;
+    unavailable.textContent = 'AGY cannot use browser pages such as this one.';
     sharedList.replaceChildren(emptyItem(canShare ? 'All HTTP(S) tabs, including this one' : 'All HTTP(S) tabs'));
     return;
   }

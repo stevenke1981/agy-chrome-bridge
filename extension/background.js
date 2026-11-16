@@ -201,7 +201,7 @@ async function listSharedTabs() {
 // Returns the origin recorded at share time (null in auto-share mode), or throws if the tab is not shared or has moved.
 async function verifiedOrigin(tabId) {
   if (await isAutoShare()) {
-    if (!Number.isInteger(tabId)) throw new Error(NOT_SHARED_MESSAGE);
+    if (!Number.isInteger(tabId)) throw new Error('tabId must be an integer from browser_tabs.');
     const tab = await chrome.tabs.get(tabId);
     if (!isWebUrl(tab.url)) throw new Error('Only HTTP and HTTPS pages can be controlled.');
     return null;

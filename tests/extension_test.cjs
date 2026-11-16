@@ -332,6 +332,9 @@ process.on('exit', () => {
   assert.equal((await run('browser_navigate', { tabId: 7, url: 'https://example.org/' })).navigated, 'https://example.org/', 'auto-share allows other sites');
   tabUrl = 'https://other.example/';
   assert.equal((await run('browser_scroll', { tabId: 7, deltaY: 10 })).ok, true, 'a tab that moved stays usable under auto-share');
+  pageOrigin = 'null';
+  await assert.rejects(() => run('browser_scroll', { tabId: 7, deltaY: 10 }), /HTTP and HTTPS/, 'auto-share rechecks the page after attaching');
+  pageOrigin = undefined;
   tabUrl = 'chrome://settings/';
   await assert.rejects(() => run('browser_scroll', { tabId: 7, deltaY: 10 }), /HTTP and HTTPS/, 'auto-share never covers browser pages');
   localStore.autoShare = false;
