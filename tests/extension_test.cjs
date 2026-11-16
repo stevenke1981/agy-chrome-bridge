@@ -385,6 +385,10 @@ process.on('exit', () => {
   assert.equal(socketCount, socketsWhileDown, 'no WebSocket is opened while the gateway is down');
   assert.equal(currentStatus(), DEFAULT_CLOSE_TEXT);
   gatewayUp = true;
+  const recovered = waitOpen();
+  chrome.runtime.onMessage.emit({ type: 'reconnect' }, { id: 'test' }, () => {});
+  await recovered;
+  assert.equal(socketCount, socketsWhileDown + 1, 'once the gateway answers, the socket opens (connecting was reset)');
   finished = true;
   clearInterval(keepAlive);
   console.log('Extension checks passed');
