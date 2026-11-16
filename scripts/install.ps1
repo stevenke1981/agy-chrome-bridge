@@ -97,6 +97,8 @@ Copy-Item -LiteralPath $sourceGateway -Destination (Join-Path $stage 'bridge\gat
 foreach ($name in @('index.js', 'package.json', 'LICENSE')) { Copy-Item -LiteralPath (Join-Path $sourceWs $name) -Destination (Join-Path (Join-Path $stage 'bridge\node_modules\ws') $name) }
 Get-ChildItem -LiteralPath (Join-Path $sourceWs 'lib') -File -Filter '*.js' | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination (Join-Path (Join-Path $stage 'bridge\node_modules\ws\lib') $_.Name) }
 foreach ($name in @('manifest.json', 'background.js', 'popup.html', 'popup.js')) { Copy-Item -LiteralPath (Join-Path $sourceExtension $name) -Destination (Join-Path (Join-Path $stage 'extension') $name) }
+New-Item -ItemType Directory -Path (Join-Path $stage 'extension\icons') -Force | Out-Null
+foreach ($size in @(16, 32, 48, 128)) { Copy-Item -LiteralPath (Join-Path $sourceExtension "icons\icon$size.png") -Destination (Join-Path $stage "extension\icons\icon$size.png") }
 $configText = @{ token = $pairToken } | ConvertTo-Json -Compress
 $configPathStage = Join-Path $stage 'extension\bridge_config.json'
 [System.IO.File]::WriteAllText($configPathStage, $configText, [System.Text.UTF8Encoding]::new($false))
