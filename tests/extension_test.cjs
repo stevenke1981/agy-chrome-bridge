@@ -18,6 +18,8 @@ let duplicateFixture = false;
 let editable = false;
 let redirectFocus = false;
 let typedText = [];
+let keyEvents = [];
+let scrollEvents = [];
 const chrome = {
   runtime: { connectNative: () => nativePort, onMessage: event(), onStartup: event(), onInstalled: event(), id: 'test' },
   storage: { session: { get: async () => ({ sharedTabs: [7] }), set: async () => {} } },
@@ -28,7 +30,8 @@ const chrome = {
   }, onUpdated: updated, onRemoved: event() },
   debugger: { attach: async () => {}, detach: async () => {}, onEvent: debuggerEvents, sendCommand: async (target, method, params) => {
     if (method === 'Page.captureScreenshot') return { data: images.shift() };
-    if (method === 'Input.dispatchMouseEvent') { mouseEvents++; return {}; }
+    if (method === 'Input.dispatchMouseEvent') { if (params.type === 'mouseWheel') scrollEvents.push(params); else mouseEvents++; return {}; }
+    if (method === 'Input.dispatchKeyEvent') { keyEvents.push(params); return {}; }
     if (method === 'Input.insertText') { typedText.push(params.text); return {}; }
     if (method === 'Runtime.evaluate') {
       const element = { getBoundingClientRect: () => ({ x: 10, y: 10, width: 40, height: 20 }), scrollIntoView() {}, focus() { document.activeElement = redirectFocus ? {} : element; }, matches: () => editable, contains: hit => hit === element };
@@ -44,7 +47,7 @@ const chrome = {
         document.title = 'Duplicate identifiers';
         document.querySelectorAll = selector => selector === '#duplicate' || selector.startsWith('a,button,') ? buttons : [];
       }
-      try { return { result: { value: vm.runInNewContext(params.expression, { document, CSS: { escape: x => x }, location: { href: 'https://example.com' } }) } }; }
+      try { return { result: { value: vm.runInNewContext(params.expression, { document, CSS: { escape: x => x }, location: { href: 'https://example.com' }, window: { innerWidth: 800, innerHeight: 600 } }) } }; }
       catch (error) { return { exceptionDetails: { text: error.message } }; }
     }
     if (method === 'Page.navigate') {
@@ -94,6 +97,25 @@ const run = (method, params) => vm.runInContext('run', context)(method, params);
   redirectFocus = false;
   await run('browser_type', { tabId: 7, selector: '#target', text: 'test' });
   assert.deepEqual(typedText, ['test']);
+  await run('browser_key', { tabId: 7, key: 'a', modifiers: ['Control'] });
+  assert.equal(keyEvents.length, 2);
+  assert.equal(keyEvents[0].modifiers, 2);
+  assert.equal(keyEvents[0].windowsVirtualKeyCode, 65);
+  await assert.rejects(() => run('browser_key', { tabId: 7, key: '__proto__' }), /Unsupported/);
+  await assert.rejects(() => run('browser_key', { tabId: 7, key: 'Enter', modifiers: ['Invalid'] }), /Unsupported/);
+  assert.equal(keyEvents.length, 2);
+  await run('browser_key', { tabId: 7, key: 'Enter' });
+  assert.equal(keyEvents[2].type, 'keyDown');
+  assert.equal(keyEvents[2].text, '\r');
+  await run('browser_key', { tabId: 7, key: 'a', modifiers: ['Shift'] });
+  assert.equal(keyEvents[4].text, 'A');
+  await run('browser_key', { tabId: 7, key: '1', modifiers: ['Shift'] });
+  assert.equal(keyEvents[6].key, '!');
+  assert.equal(keyEvents[6].text, '!');
+  await run('browser_scroll', { tabId: 7, deltaY: 400 });
+  assert.equal(scrollEvents[0].deltaY, 400);
+  assert.equal(scrollEvents[0].x, 400);
+  await assert.rejects(() => run('browser_scroll', { tabId: 7, deltaY: 4000 }), /Scroll distances/);
   download = true;
   await assert.rejects(() => run('browser_navigate', { tabId: 7, url: 'https://example.org/file.zip' }), /download/);
   download = false;

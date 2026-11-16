@@ -3,13 +3,12 @@ import os
 import socket
 import struct
 import subprocess
-import sys
 import tempfile
 import threading
 import unittest
 from pathlib import Path
 
-EXE = Path(sys.argv.pop(1)).resolve()
+COMMAND = ['node', str(Path('src/bridge.cjs').resolve())]
 
 
 def frame_read(pipe):
@@ -29,10 +28,10 @@ class BridgeTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.env = {**os.environ, 'LOCALAPPDATA': self.temp.name}
-        self.host = subprocess.Popen([str(EXE)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=self.env)
+        self.host = subprocess.Popen(COMMAND, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=self.env)
         self.assertEqual(frame_read(self.host.stdout), {'type': 'ready'})
         self.endpoint = json.loads((Path(self.temp.name) / 'agy-chrome-bridge' / 'state' / 'endpoint.json').read_text())
-        self.mcp = subprocess.Popen([str(EXE), '--mcp'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=self.env)
+        self.mcp = subprocess.Popen(COMMAND + ['--mcp'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=self.env)
 
     def tearDown(self):
         for proc in (self.host, self.mcp):
@@ -46,6 +45,8 @@ class BridgeTest(unittest.TestCase):
         return json.loads(self.mcp.stdout.readline())
 
     def test_initialize_and_tools(self):
+        self.mcp.stdin.write('null\n')
+        self.mcp.stdin.flush()
         result = self.request({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {'protocolVersion': '2024-11-05'}})
         self.assertEqual(result['result']['protocolVersion'], '2024-11-05')
         result = self.request({'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list'})
@@ -65,13 +66,33 @@ class BridgeTest(unittest.TestCase):
         worker.join(timeout=2)
         self.assertFalse(worker.is_alive())
 
+    def test_concurrent_requests_keep_their_response_ids(self):
+        def chrome():
+            first = frame_read(self.host.stdout)
+            second = frame_read(self.host.stdout)
+            frame_write(self.host.stdin, {'id': second['id'], 'result': {'which': second['params']['tabId']}})
+            frame_write(self.host.stdin, {'id': first['id'], 'result': {'which': first['params']['tabId']}})
+        worker = threading.Thread(target=chrome, daemon=True)
+        worker.start()
+        for identifier in (1, 2):
+            request = {'jsonrpc': '2.0', 'id': identifier, 'method': 'tools/call', 'params': {'name': 'browser_snapshot', 'arguments': {'tabId': identifier}}}
+            self.mcp.stdin.write(json.dumps(request) + '\n')
+        self.mcp.stdin.flush()
+        responses = [json.loads(self.mcp.stdout.readline()) for _ in range(2)]
+        self.assertEqual({response['id']: json.loads(response['result']['content'][0]['text'])['which'] for response in responses}, {1: 1, 2: 2})
+        worker.join(timeout=2)
+        self.assertFalse(worker.is_alive())
+
     def test_rejects_unauthorized_connection_and_second_profile(self):
+        with socket.create_connection(('127.0.0.1', self.endpoint['port']), timeout=3) as client:
+            client.sendall(b'null\n')
+            self.assertEqual(client.recv(1), b'')
         with socket.create_connection(('127.0.0.1', self.endpoint['port']), timeout=3) as client:
             client.sendall(b'{"token":"wrong","method":"browser_tabs","params":{}}\n')
             self.assertEqual(client.recv(1), b'')
-        other = subprocess.run([str(EXE)], input=b'', capture_output=True, env=self.env, timeout=5)
+        other = subprocess.run(COMMAND, input=b'', capture_output=True, env=self.env, timeout=5)
         self.assertNotEqual(other.returncode, 0)
-        self.assertIn(b'another Chrome profile', other.stderr)
+        self.assertIn(b'Another Chrome profile', other.stderr)
 
     def test_endpoint_acl_is_not_inherited(self):
         state = Path(self.temp.name) / 'agy-chrome-bridge' / 'state' / 'endpoint.json'

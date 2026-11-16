@@ -73,6 +73,32 @@ async function run(method, params) {
       if (image.data.length > 800000) throw new Error('Screenshot is too large; reduce the browser window size and retry.');
       return image;
     }
+    if (method === 'browser_key') {
+      const special = { Enter: ['Enter', 13], Tab: ['Tab', 9], Escape: ['Escape', 27], Backspace: ['Backspace', 8], Delete: ['Delete', 46], ArrowUp: ['ArrowUp', 38], ArrowDown: ['ArrowDown', 40], ArrowLeft: ['ArrowLeft', 37], ArrowRight: ['ArrowRight', 39], Home: ['Home', 36], End: ['End', 35], PageUp: ['PageUp', 33], PageDown: ['PageDown', 34], ' ': ['Space', 32] };
+      const key = params.key;
+      const descriptor = typeof key === 'string' && /^[a-z]$/i.test(key) ? [`Key${key.toUpperCase()}`, key.toUpperCase().charCodeAt(0)] : typeof key === 'string' && /^[0-9]$/.test(key) ? [`Digit${key}`, key.charCodeAt(0)] : Object.hasOwn(special, key) ? special[key] : undefined;
+      const flags = { Alt: 1, Control: 2, Meta: 4, Shift: 8 };
+      const modifiers = params.modifiers ?? [];
+      if (!descriptor || !Array.isArray(modifiers) || modifiers.some(value => !Object.hasOwn(flags, value)) || new Set(modifiers).size !== modifiers.length) throw new Error('Unsupported key or modifiers');
+      const shifted = modifiers.includes('Shift');
+      const shiftedDigit = shifted && /^[0-9]$/.test(key) ? ')!@#$%^&*('[Number(key)] : undefined;
+      const actualKey = shiftedDigit ?? (shifted && /^[a-z]$/i.test(key) ? key.toUpperCase() : key);
+      const event = { key: actualKey, code: descriptor[0], windowsVirtualKeyCode: descriptor[1], modifiers: modifiers.reduce((mask, value) => mask | flags[value], 0) };
+      const blockedText = modifiers.some(value => ['Alt', 'Control', 'Meta'].includes(value));
+      const text = blockedText ? undefined : key === 'Enter' ? '\r' : shiftedDigit ?? (key.length === 1 ? actualKey : undefined);
+      const down = text === undefined ? { ...event, type: 'rawKeyDown' } : { ...event, type: 'keyDown', text, unmodifiedText: text };
+      await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', down);
+      await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', { ...event, type: 'keyUp' });
+      return { ok: true };
+    }
+    if (method === 'browser_scroll') {
+      const deltaX = params.deltaX ?? 0, deltaY = params.deltaY;
+      if (![deltaX, deltaY].every(value => typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= 3000)) throw new Error('Scroll distances must be finite numbers within 3000 pixels');
+      const evaluated = await chrome.debugger.sendCommand(target, 'Runtime.evaluate', { expression: '({x: Math.floor(window.innerWidth / 2), y: Math.floor(window.innerHeight / 2)})', returnByValue: true });
+      if (evaluated.exceptionDetails) throw new Error(evaluated.exceptionDetails.text);
+      await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', { type: 'mouseWheel', ...evaluated.result.value, deltaX, deltaY });
+      return { ok: true };
+    }
     let expression;
     if (method === 'browser_snapshot') {
       expression = `(() => {
