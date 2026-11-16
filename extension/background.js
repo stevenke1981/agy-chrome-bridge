@@ -7,7 +7,7 @@ const RECONNECT_ALARM_MINUTES = 0.5;
 const PROFILE_MISMATCH_CLOSE_CODE = 4001;
 const PROFILE_MISMATCH_STATUS = 'This profile is not the paired one (another profile paired first, or the extension was reinstalled). To pair this one, run: node "%LOCALAPPDATA%\\agy-chrome-bridge\\bridge\\bridge.cjs" --unpair';
 const DEFAULT_CLOSE_STATUS = 'AGY is not running or local connection is blocked';
-const NOT_SHARED_MESSAGE = 'Tab is not shared. Open the extension in that tab and select Share this tab.';
+const NOT_SHARED_MESSAGE = 'Tab is not shared. Turn on Auto-share in the extension popup, or open that tab and select Share this tab.';
 const MAX_SCREENSHOT_LENGTH = 800000;
 const MODIFIER_FLAGS = { Alt: 1, Control: 2, Meta: 4, Shift: 8 };
 const SPECIAL_KEYS = { Enter: ['Enter', 13], Tab: ['Tab', 9], Escape: ['Escape', 27], Backspace: ['Backspace', 8], Delete: ['Delete', 46], ArrowUp: ['ArrowUp', 38], ArrowDown: ['ArrowDown', 40], ArrowLeft: ['ArrowLeft', 37], ArrowRight: ['ArrowRight', 39], Home: ['Home', 36], End: ['End', 35], PageUp: ['PageUp', 33], PageDown: ['PageDown', 34], ' ': ['Space', 32] };
@@ -180,14 +180,32 @@ async function readShares() {
   return { sharedTabs, sharedOrigins };
 }
 
+// Auto-share (default on) makes every HTTP(S) tab in this profile available; the user can turn it off in the popup.
+async function isAutoShare() {
+  const { autoShare } = await chrome.storage.local.get('autoShare');
+  return autoShare !== false;
+}
+
+const isWebUrl = url => /^https?:\/\//i.test(url || '');
+
 async function listSharedTabs() {
+  if (await isAutoShare()) {
+    const tabs = await chrome.tabs.query({});
+    return tabs.filter(tab => isWebUrl(tab.url)).map(({ id, title, url, active }) => ({ id, title, url, active, sharedOrigin: 'auto' }));
+  }
   const { sharedTabs, sharedOrigins } = await readShares();
   const tabs = await Promise.all(sharedTabs.map(id => chrome.tabs.get(id).catch(() => null)));
   return tabs.filter(Boolean).map(({ id, title, url }) => ({ id, title, url, sharedOrigin: sharedOrigins[id] }));
 }
 
-// Returns the origin recorded at share time, or throws if the tab is not shared or has moved.
+// Returns the origin recorded at share time (null in auto-share mode), or throws if the tab is not shared or has moved.
 async function verifiedOrigin(tabId) {
+  if (await isAutoShare()) {
+    if (!Number.isInteger(tabId)) throw new Error('tabId must be an integer from browser_tabs.');
+    const tab = await chrome.tabs.get(tabId);
+    if (!isWebUrl(tab.url)) throw new Error('Only HTTP and HTTPS pages can be controlled.');
+    return null;
+  }
   const { sharedTabs, sharedOrigins } = await readShares();
   const origin = Number.isInteger(tabId) ? sharedOrigins[tabId] : undefined;
   if (!Number.isInteger(tabId) || !sharedTabs.includes(tabId) || typeof origin !== 'string') throw new Error(NOT_SHARED_MESSAGE);
@@ -244,7 +262,7 @@ async function navigateAndWaitForLoad(target, url) {
 async function navigate(target, params, origin) {
   const url = new URL(params.url);
   if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Only HTTP and HTTPS URLs are supported.');
-  if (url.origin !== origin) throw new Error(`Navigation to ${url.origin} is outside the shared origin ${origin}; share it again from the extension popup.`);
+  if (origin !== null && url.origin !== origin) throw new Error(`Navigation to ${url.origin} is outside the shared origin ${origin}; share it again from the extension popup.`);
   await command(target, 'Page.enable');
   await command(target, 'Page.setLifecycleEventsEnabled', { enabled: true });
   await navigateAndWaitForLoad(target, url);
@@ -351,6 +369,10 @@ function runBrowserOperation(target, method, params, origin) {
 // Re-check the origin after attaching, so a navigation between the first check and the attach cannot bypass the lock.
 async function assertOriginAfterAttach(target, origin) {
   const current = await evaluateInPage(target, 'location.origin');
+  if (origin === null) {
+    if (!isWebUrl(current)) throw new Error('Only HTTP and HTTPS pages can be controlled.');
+    return;
+  }
   if (current !== origin) throw new Error(`Tab moved to ${current}; share it again from the extension popup.`);
 }
 

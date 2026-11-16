@@ -50,6 +50,17 @@
     #shared li.empty { color: var(--muted); }
     #shared li button { flex: none; width: 24px; height: 24px; border: 0; border-radius: 6px; background: none; color: var(--muted); font-size: 16px; line-height: 1; cursor: pointer; }
     #shared li button:hover { background: color-mix(in srgb, var(--bad) 14%, transparent); color: var(--bad); }
+    .mode { display: flex; align-items: center; gap: 12px; }
+    .mode label { flex: 1; display: grid; gap: 2px; cursor: pointer; }
+    #modeHint { color: var(--muted); font-size: 12px; }
+    #autoShare { appearance: none; flex: none; position: relative; width: 38px; height: 22px; margin: 0; border-radius: 11px;
+      background: var(--line); cursor: pointer; transition: background .15s; }
+    #autoShare::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%;
+      background: #fff; box-shadow: 0 1px 2px rgb(0 0 0 / .3); transition: transform .15s; }
+    #autoShare:checked { background: var(--ok); }
+    #autoShare:checked::after { transform: translateX(16px); }
+    #autoShare:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    @media (prefers-reduced-motion: reduce) { #autoShare, #autoShare::after { transition: none; } }
     footer { padding: 0 16px 14px; color: var(--muted); font-size: 11px; }
   </style>
 </head>
@@ -67,7 +78,14 @@
       </div>
       <p id="detail" hidden></p>
     </section>
-    <section class="card" aria-label="Current tab">
+    <section class="card mode" aria-label="Sharing mode">
+      <label for="autoShare">
+        <strong>Auto-share all tabs</strong>
+        <span id="modeHint">AGY can use any HTTP(S) tab in this profile.</span>
+      </label>
+      <input type="checkbox" id="autoShare" role="switch">
+    </section>
+    <section class="card" aria-label="Current tab" id="tabCard">
       <p class="eyebrow">Current tab</p>
       <p id="tab"></p>
       <p id="origin"></p>
@@ -79,7 +97,7 @@
       <ul id="shared"></ul>
     </section>
   </main>
-  <footer>AGY can read and operate only the tabs you share. Sharing ends when Chrome closes.</footer>
+  <footer></footer>
   <script type="module" src="popup.js"></script>
 </body>
 </html>

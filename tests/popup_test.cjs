@@ -16,8 +16,8 @@ function element() {
   };
 }
 
-async function setup(tab, initial = {}, bridgeStatus = 'connected') {
-  const elements = Object.fromEntries(['version', 'status', 'pill', 'detail', 'origin', 'tab', 'toggle', 'reconnect', 'shared', 'unavailable'].map(id => [id, element()]));
+async function setup(tab, initial = {}, bridgeStatus = 'connected', local = { autoShare: false }) {
+  const elements = Object.fromEntries(['version', 'status', 'pill', 'detail', 'origin', 'tab', 'toggle', 'reconnect', 'shared', 'unavailable', 'autoShare'].map(id => [id, element()]));
   const document = { querySelector: selector => elements[selector.slice(1)], createElement: element };
   const store = { sharedTabs: [], sharedOrigins: {}, ...initial };
   const messages = [];
@@ -29,12 +29,13 @@ async function setup(tab, initial = {}, bridgeStatus = 'connected') {
         get: async defaults => Object.fromEntries(Object.entries(defaults).map(([key, fallback]) => [key, store[key] ?? fallback])),
         set: async values => { Object.assign(store, values); },
       },
+      local: { get: async () => ({ ...local }), set: async values => { Object.assign(local, values); } },
     },
   };
   const crypto = { getRandomValues: bytes => bytes.fill(7) };
   class FakeWebSocket { constructor(url) { this.url = url; setImmediate(() => this.onopen()); } close() {} }
   await new AsyncFunction('chrome', 'document', 'setInterval', 'crypto', 'WebSocket', source)(chrome, document, () => {}, crypto, FakeWebSocket);
-  return { elements, shared: () => store.sharedTabs, origins: () => store.sharedOrigins, messages };
+  return { elements, shared: () => store.sharedTabs, origins: () => store.sharedOrigins, messages, local };
 }
 
 (async () => {
@@ -86,5 +87,14 @@ async function setup(tab, initial = {}, bridgeStatus = 'connected') {
   const missing = await setup({ id: 9, title: 'Example', url: 'https://example.com/' }, {}, 'Install the bridge and load its installed extension folder');
   assert.equal(missing.elements.pill.attributes['data-state'], 'bad');
   assert.equal(missing.elements.detail.textContent, 'Install the bridge and load its installed extension folder');
+  const automatic = await setup({ id: 7, title: 'Example', url: 'https://example.com/' }, {}, 'connected', {});
+  assert.equal(automatic.elements.autoShare.checked, true, 'auto-share is on by default');
+  assert.equal(automatic.elements.toggle.hidden, true, 'no per-tab share button while auto-share is on');
+  assert.equal(automatic.elements.shared.children[0].textContent, 'All HTTP(S) tabs, including this one');
+  automatic.elements.autoShare.checked = false;
+  await automatic.elements.autoShare.handlers.change();
+  assert.equal(automatic.local.autoShare, false, 'turning the switch off is stored');
+  assert.equal(automatic.elements.toggle.hidden, false);
+  assert.equal(automatic.elements.shared.children[0].textContent, 'No tabs shared');
   console.log('Popup checks passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

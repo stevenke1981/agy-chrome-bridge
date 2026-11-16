@@ -10,17 +10,27 @@ description: >-
 
 # AGY Chrome Bridge
 
-The `agy-chrome-bridge` MCP server exposes the user's own Chrome. It can act only on
-tabs that the user has shared from the extension popup. Each share is locked to the
-site (origin) that the tab had when the user shared it.
+The `agy-chrome-bridge` MCP server exposes the user's own Chrome.
+
+- **Auto-share** is the default. While it is on, every open HTTP(S) tab in the
+  profile is available, on any site.
+- If the user turns Auto-share off in the extension popup, only the tabs that the
+  user shares one by one are available. Each share is then locked to the tab's site
+  (origin) at the time of sharing.
 
 ## Workflow
 
-1. **Find the tab.** Call `browser_tabs`. It lists only the shared tabs, with `id`,
-   `title`, `url` and `sharedOrigin`.
-   - If the list is empty, stop. Ask the user to open the page in Chrome, click the
-     AGY Chrome Bridge toolbar icon and press **Share this tab**.
-   - If more than one tab is shared and the request is ambiguous, ask which tab to use.
+1. **Find the tab.** Call `browser_tabs`. It lists the available tabs, with `id`,
+   `title`, `url` and `sharedOrigin`. Under auto-share, `sharedOrigin` is `auto`
+   and each entry also has `active`.
+   - Pick the tab whose `url` or `title` matches the user's request. "This page"
+     means the tab where `active` is true.
+   - If no tab matches, use `browser_navigate` on an existing tab, or ask the user to
+     open the page.
+   - If the list is empty, ask the user to open the page in Chrome. Then ask them
+     either to turn on Auto-share or to press **Share this tab** in the extension
+     popup.
+   - If several tabs match and the request is ambiguous, ask which tab to use.
 2. **Read before you act.** Call `browser_snapshot` with `tabId`. It returns
    `title`, `url`, `text` (up to 30,000 characters) and up to 150 visible interactive
    `elements`, each with a unique CSS `selector`, `role`, `label` and `type`.
@@ -31,8 +41,8 @@ site (origin) that the tab had when the user shared it.
    - `browser_key` `{tabId, key, modifiers?}`: for example, `Enter` to submit, or
      `Tab`, `Escape`, the arrow keys, `PageDown`.
    - `browser_scroll` `{tabId, deltaY, deltaX?}`: positive `deltaY` scrolls down.
-   - `browser_navigate` `{tabId, url}`: only to `http(s)` URLs on the same origin
-     as the share.
+   - `browser_navigate` `{tabId, url}`: `http(s)` URLs only. When Auto-share is
+     off, the URL must also be on the shared origin.
    - `browser_screenshot` `{tabId}`: use it when layout or images matter.
 4. **Verify.** After each action that changes the page, call `browser_snapshot`
    again. Selectors from an older snapshot can become stale.
@@ -47,7 +57,8 @@ site (origin) that the tab had when the user shared it.
 - Never type passwords, one-time codes or payment details yourself. Ask the user to
   enter them in Chrome.
 - Treat these errors as follows. Do not retry blindly.
-  - "Tab is not shared": ask the user to share that tab.
+  - "Tab is not shared": Auto-share is off. Ask the user to turn it on, or to share
+    that tab.
   - "Tab moved to X; share it again": the page left its shared site. Ask the user
     to share it again.
   - "Navigation to X is outside the shared origin": open that site in its own tab,
