@@ -29,7 +29,7 @@ $registryExisted = Test-Path -LiteralPath $RegistryPath
 $previousRegistration = if ($registryExisted) { (Get-Item -LiteralPath $RegistryPath).GetValue('') } else { $null }
 if ($previousRegistration -and $previousRegistration -ne $manifestPath) { throw 'A different native host already owns com.agy_chrome_bridge. No changes made.' }
 if (Test-Path -LiteralPath $configPath) {
-    $config = Get-Content -Raw -LiteralPath $configPath | ConvertFrom-Json
+    $config = Get-Content -Raw -Encoding UTF8 -LiteralPath $configPath | ConvertFrom-Json
     $existing = $config.mcpServers.'agy-chrome-bridge'
     if ($existing) {
         $legacy = $existing.command -eq $legacyBin

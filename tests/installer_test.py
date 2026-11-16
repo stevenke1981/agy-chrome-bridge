@@ -39,7 +39,7 @@ class InstallerTest(unittest.TestCase):
                 subprocess.run(['reg', 'delete', 'HKCU\\' + key_name, '/f'], capture_output=True)
 
     def test_failed_upgrade_restores_previous_installation(self):
-        with tempfile.TemporaryDirectory() as temp:
+        with tempfile.TemporaryDirectory(prefix='agy-測試-🧪-') as temp:
             root = Path(temp)
             local = root / 'local'
             profile = root / 'profile'
@@ -52,8 +52,8 @@ class InstallerTest(unittest.TestCase):
                 directory.mkdir(parents=True)
             installed_bridge.write_text('old bridge')
             (extension / 'old.txt').write_text('old extension')
-            old_config = json.dumps({'mcpServers': {'agy-chrome-bridge': {'command': str(node), 'args': [str(installed_bridge), '--mcp']}, 'other': {'command': 'other'}}})
-            config.write_text(old_config)
+            old_config = json.dumps({'mcpServers': {'agy-chrome-bridge': {'command': str(node), 'args': [str(installed_bridge), '--mcp']}, 'other': {'command': 'other'}}}, ensure_ascii=False)
+            config.write_text(old_config, encoding='utf-8')
             source_bridge = root / 'new.cjs'
             source_bridge.write_text('new bridge')
             source_extension = root / 'new-extension'
@@ -69,7 +69,7 @@ class InstallerTest(unittest.TestCase):
                 self.assertIn('registration failed', result.stderr)
                 self.assertEqual(installed_bridge.read_text(), 'old bridge')
                 self.assertEqual((extension / 'old.txt').read_text(), 'old extension')
-                self.assertEqual(config.read_text(), old_config)
+                self.assertEqual(config.read_text(encoding='utf-8'), old_config)
                 self.assertFalse((extension / 'new.txt').exists())
                 check = subprocess.run(['reg', 'query', 'HKCU\\' + key_name], capture_output=True)
                 self.assertNotEqual(check.returncode, 0)
@@ -91,7 +91,7 @@ class InstallerTest(unittest.TestCase):
                 result = subprocess.run(['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(SCRIPT), '-RegistryPath', registry], capture_output=True, text=True, env=env, timeout=30)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 host = local / 'agy-chrome-bridge' / 'bridge' / 'host.cmd'
-                manifest = json.loads((local / 'agy-chrome-bridge' / 'com.agy_chrome_bridge.json').read_text())
+                manifest = json.loads((local / 'agy-chrome-bridge' / 'com.agy_chrome_bridge.json').read_text(encoding='utf-8'))
                 self.assertEqual(Path(manifest['path']), host)
                 self.assertFalse(list((local / 'agy-chrome-bridge').rglob('*.exe')))
                 process = subprocess.Popen(['cmd.exe', '/d', '/c', str(host)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
