@@ -106,6 +106,8 @@ function navigate(target) {
 // Starts empty: the background must create this profile's pairing key on its own.
 // Manual sharing for the main flow; auto-share (the default when unset) is tested separately below.
 const localStore = { autoShare: false };
+let gatewayUp = true;
+let probes = 0;
 let localSets = 0;
 const badges = [];
 const chrome = {
@@ -144,7 +146,10 @@ const delayedTimer = (fn, ms) => {
 };
 
 const firstOpen = waitOpen();
-const context = vm.createContext({ chrome, URL, WebSocket: FakeWebSocket, crypto: webcrypto, TextEncoder, fetch: async () => ({ ok: true, json: async () => ({ token: 'a'.repeat(64) }) }), setTimeout: delayedTimer, clearTimeout, setInterval: () => 1, clearInterval: () => {}, console });
+const context = vm.createContext({ chrome, URL, AbortSignal, WebSocket: FakeWebSocket, crypto: webcrypto, TextEncoder, fetch: async url => {
+  if (String(url).startsWith('http://127.0.0.1:38745')) { probes++; if (!gatewayUp) throw new TypeError('Failed to fetch'); return { status: 404 }; }
+  return { ok: true, json: async () => ({ token: 'a'.repeat(64) }) };
+}, setTimeout: delayedTimer, clearTimeout, setInterval: () => 1, clearInterval: () => {}, console });
 vm.runInContext(fs.readFileSync('extension/background.js', 'utf8'), context);
 const run = (method, params) => vm.runInContext('run', context)(method, params);
 
@@ -368,6 +373,18 @@ process.on('exit', () => {
   alarmEvents.emit({ name: 'reconnect' });
   await tick();
   assert.equal(socketCount, socketsBefore + 3, 'the alarm does not replace an open socket');
+  // Gateway down: probe with fetch and never open a WebSocket, so Chrome records no extension error.
+  connection.onclose({ code: 1006, reason: '' });
+  gatewayUp = false;
+  const socketsWhileDown = socketCount;
+  const probesBefore = probes;
+  chrome.runtime.onMessage.emit({ type: 'reconnect' }, { id: 'test' }, () => {});
+  for (let i = 0; i < 20 && probes === probesBefore; i++) await tick();
+  await tick(); await tick();
+  assert.ok(probes > probesBefore, 'the gateway is probed');
+  assert.equal(socketCount, socketsWhileDown, 'no WebSocket is opened while the gateway is down');
+  assert.equal(currentStatus(), DEFAULT_CLOSE_TEXT);
+  gatewayUp = true;
   finished = true;
   clearInterval(keepAlive);
   console.log('Extension checks passed');

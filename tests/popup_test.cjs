@@ -16,7 +16,7 @@ function element() {
   };
 }
 
-async function setup(tab, initial = {}, bridgeStatus = 'connected', local = { autoShare: false }) {
+async function setup(tab, initial = {}, bridgeStatus = 'connected', local = { autoShare: false }, gatewayUp = true) {
   const elements = Object.fromEntries(['version', 'status', 'pill', 'detail', 'origin', 'tab', 'toggle', 'reconnect', 'shared', 'unavailable', 'autoShare'].map(id => [id, element()]));
   const document = { querySelector: selector => elements[selector.slice(1)], createElement: element };
   const store = { sharedTabs: [], sharedOrigins: {}, ...initial };
@@ -34,7 +34,8 @@ async function setup(tab, initial = {}, bridgeStatus = 'connected', local = { au
   };
   const crypto = { getRandomValues: bytes => bytes.fill(7) };
   class FakeWebSocket { constructor(url) { this.url = url; setImmediate(() => this.onopen()); } close() {} }
-  await new AsyncFunction('chrome', 'document', 'setInterval', 'crypto', 'WebSocket', source)(chrome, document, () => {}, crypto, FakeWebSocket);
+  const fetch = async () => { if (!gatewayUp) throw new TypeError('Failed to fetch'); return { status: 404 }; };
+  await new AsyncFunction('chrome', 'document', 'setInterval', 'crypto', 'WebSocket', 'fetch', source)(chrome, document, () => {}, crypto, FakeWebSocket, fetch);
   return { elements, shared: () => store.sharedTabs, origins: () => store.sharedOrigins, messages, local };
 }
 
@@ -96,5 +97,9 @@ async function setup(tab, initial = {}, bridgeStatus = 'connected', local = { au
   assert.equal(automatic.local.autoShare, false, 'turning the switch off is stored');
   assert.equal(automatic.elements.toggle.hidden, false);
   assert.equal(automatic.elements.shared.children[0].textContent, 'No tabs shared');
+  const down = await setup({ id: 9, title: 'Example', url: 'https://example.com/' }, {}, 'connected', { autoShare: false }, false);
+  await down.elements.reconnect.click();
+  assert.equal(down.messages.includes('reconnect'), false, 'Reconnect does not ask the background while the gateway is down');
+  assert.equal(down.elements.status.textContent, 'Waiting for AGY');
   console.log('Popup checks passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -105,10 +105,15 @@ async function updateStatus(type = 'status') {
   const connection = await chrome.runtime.sendMessage({ type });
   showStatus(describe(connection.status));
 }
-function reconnectFromPopup() {
-  const probe = new WebSocket('ws://127.0.0.1:38745/bridge');
-  probe.onopen = () => { probe.close(); updateStatus('reconnect'); };
-  probe.onerror = () => showStatus({ headline: 'Not connected', state: 'bad', detail: 'Start AGY CLI or IDE, or allow local loopback access.' });
+// A fetch probe fails silently; a refused WebSocket would be recorded as an extension error.
+async function reconnectFromPopup() {
+  try {
+    await fetch('http://127.0.0.1:38745/', { cache: 'no-store' });
+  } catch {
+    showStatus({ headline: 'Waiting for AGY', state: 'busy', detail: 'Start AGY CLI or IDE, or allow local loopback access.' });
+    return;
+  }
+  await updateStatus('reconnect');
 }
 await updateStatus();
 await renderShares();

@@ -6,7 +6,9 @@ const RECONNECT_ALARM = 'reconnect';
 const RECONNECT_ALARM_MINUTES = 0.5;
 const PROFILE_MISMATCH_CLOSE_CODE = 4001;
 const PROFILE_MISMATCH_STATUS = 'This profile is not the paired one (another profile paired first, or the extension was reinstalled). To pair this one, run: node "%LOCALAPPDATA%\\agy-chrome-bridge\\bridge\\bridge.cjs" --unpair';
-const DEFAULT_CLOSE_STATUS = 'AGY is not running or local connection is blocked';
+const GATEWAY_PROBE_URL = 'http://127.0.0.1:38745/';
+const GATEWAY_PROBE_TIMEOUT_MS = 3000;
+const DEFAULT_CLOSE_STATUS ='AGY is not running or local connection is blocked';
 const NOT_SHARED_MESSAGE = 'Tab is not shared. Turn on Auto-share in the extension popup, or open that tab and select Share this tab.';
 const MAX_SCREENSHOT_LENGTH = 800000;
 const MODIFIER_FLAGS = { Alt: 1, Control: 2, Meta: 4, Shift: 8 };
@@ -65,6 +67,16 @@ async function ensureProfileKey() {
   return created;
 }
 
+// Any HTTP answer (the gateway replies 404 to plain requests) means it is listening.
+async function isGatewayUp() {
+  try {
+    await fetch(GATEWAY_PROBE_URL, { cache: 'no-store', signal: AbortSignal.timeout(GATEWAY_PROBE_TIMEOUT_MS) });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function scheduleReconnectAlarm() {
   chrome.alarms.create(RECONNECT_ALARM, { periodInMinutes: RECONNECT_ALARM_MINUTES });
 }
@@ -99,7 +111,14 @@ async function connect() {
     connecting = false;
     return;
   }
-  const key = await crypto.subtle.importKey('raw', Uint8Array.from(config.token.match(/../g), hex => parseInt(hex, 16)), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  // Probe first: a refused fetch is silent, but every refused WebSocket is recorded as an extension error.
+  if (!(await isGatewayUp())) {
+    setStatus(DEFAULT_CLOSE_STATUS);
+    connecting = false;
+    reconnectTimer = setTimeout(connect, RECONNECT_DELAY_MS);
+    return;
+  }
+  const key =await crypto.subtle.importKey('raw', Uint8Array.from(config.token.match(/../g), hex => parseInt(hex, 16)), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
   const sign = async value => [...new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(value)))].map(byte => byte.toString(16).padStart(2, '0')).join('');
   const clientNonce = toHex(crypto.getRandomValues(new Uint8Array(32)));
   const connection = new WebSocket('ws://127.0.0.1:38745/bridge');
