@@ -247,7 +247,7 @@ async function checkGatewayLogLimit({ gatewayPath, env, temp }) {
     await closed;
     const startedAt = Date.now();
     const unavailable = await a.request(3, 'tools/call', { name: 'browser_tabs', arguments: {} });
-    assert.ok(Date.now() - startedAt >= 9500, 'gateway must wait about 10 s for the extension');
+    assert.ok(Date.now() - startedAt >= 29500, 'gateway must wait about 30 s for the extension');
     assert.equal(unavailable.result.isError, true);
     assert.match(unavailable.result.content[0].text, /Chrome is not connected/);
     await checkWaitingCallCompletesOnReconnect(port, a.request(5, 'tools/call', { name: 'browser_tabs', arguments: {} }));

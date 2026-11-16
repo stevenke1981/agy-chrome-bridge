@@ -35,6 +35,9 @@ let reconnectTimer;
 let connecting = false;
 let status = 'disconnected';
 const tabQueues = new Map();
+// Debugger targets of operations whose caller already timed out; their remaining commands must not run.
+const targetContexts = new WeakMap();
+let pairingRefused = false;
 
 function isSocketActive() {
   return Boolean(socket) && socket.readyState < WebSocket.CLOSING;
@@ -112,7 +115,9 @@ async function connect() {
     if (socket !== connection) return;
     status = closeStatus(event, failure);
     socket = undefined;
-    reconnectTimer = setTimeout(connect, RECONNECT_DELAY_MS);
+    // A pairing mismatch will not fix itself; wait for the user to press Reconnect in the popup.
+    pairingRefused = event?.code === PROFILE_MISMATCH_CLOSE_CODE;
+    if (!pairingRefused) reconnectTimer = setTimeout(connect, RECONNECT_DELAY_MS);
   };
   connection.onerror = () => { status = 'Local connection failed'; };
   const heartbeat = setInterval(() => {
@@ -136,6 +141,7 @@ function serializeForTab(tabId, task) {
 }
 
 function command(target, method, params) {
+  if (targetContexts.get(target)?.expired) return Promise.reject(new Error('Browser operation was cancelled after timing out.'));
   return withTimeout(chrome.debugger.sendCommand(target, method, params), COMMAND_TIMEOUT_MS, `Chrome did not respond to ${method} in time.`);
 }
 
@@ -318,15 +324,35 @@ function runBrowserOperation(target, method, params, origin) {
   }
 }
 
-async function runOnSharedTab(method, params) {
+// Re-check the origin after attaching, so a navigation between the first check and the attach cannot bypass the lock.
+async function assertOriginAfterAttach(target, origin) {
+  const current = await evaluateInPage(target, 'location.origin');
+  if (current !== origin) throw new Error(`Tab moved to ${current}; share it again from the extension popup.`);
+}
+
+async function runOnSharedTab(method, params, ctx) {
+  if (ctx.expired) throw new Error('Browser operation was cancelled after timing out.');
   const origin = await verifiedOrigin(params.tabId);
-  return withDebugger(params.tabId, target => runBrowserOperation(target, method, params, origin));
+  return withDebugger(params.tabId, async target => {
+    targetContexts.set(target, ctx);
+    await assertOriginAfterAttach(target, origin);
+    return runBrowserOperation(target, method, params, origin);
+  });
 }
 
 async function run(method, params) {
   if (method === 'browser_tabs') return listSharedTabs();
-  const task = serializeForTab(params.tabId, () => runOnSharedTab(method, params));
-  return withTimeout(task, OPERATION_TIMEOUT_MS, `Browser operation timed out after ${OPERATION_TIMEOUT_MS / 1000} s.`);
+  const ctx = { expired: false };
+  const task = serializeForTab(params.tabId, () => runOnSharedTab(method, params, ctx));
+  try {
+    return await withTimeout(task, OPERATION_TIMEOUT_MS, `Browser operation timed out after ${OPERATION_TIMEOUT_MS / 1000} s.`);
+  } catch (error) {
+    if (!ctx.expired && /timed out after/.test(error.message)) {
+      ctx.expired = true;
+      if (Number.isInteger(params.tabId)) chrome.debugger.detach({ tabId: params.tabId }).catch(() => {});
+    }
+    throw error;
+  }
 }
 
 async function forgetTab(tabId) {
@@ -339,11 +365,11 @@ async function forgetTab(tabId) {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (sender.id !== chrome.runtime.id) return;
-  if (message.type === 'reconnect') connect();
+  if (message.type === 'reconnect') { pairingRefused = false; connect(); }
   if (message.type === 'status' || message.type === 'reconnect') sendResponse({ status });
 });
 chrome.alarms.onAlarm.addListener(alarm => {
-  if (alarm?.name === RECONNECT_ALARM && !isSocketActive()) connect();
+  if (alarm?.name === RECONNECT_ALARM && !pairingRefused && !isSocketActive()) connect();
 });
 chrome.runtime.onStartup.addListener(startBridge);
 chrome.runtime.onInstalled.addListener(startBridge);

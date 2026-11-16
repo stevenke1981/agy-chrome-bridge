@@ -33,6 +33,7 @@ class FakeWebSocket {
 
 let sessionStore = { sharedTabs: [7], sharedOrigins: { 7: 'https://example.com' } };
 let tabUrl = 'https://example.com/';
+let pageOrigin; // when set, the page reports this origin instead of the tab URL's (navigation raced the attach)
 const attached = new Set();
 let attachCount = 0;
 let detachCount = 0;
@@ -88,7 +89,7 @@ function evaluate(params) {
     document.querySelectorAll = selector => selector === '#duplicate' || selector.startsWith('a,button,') ? buttons : [];
   }
   try {
-    return { result: { value: vm.runInNewContext(params.expression, { document, CSS: { escape: x => x }, location: { href: 'https://example.com' }, window: { innerWidth: 800, innerHeight: 600 } }) } };
+    return { result: { value: vm.runInNewContext(params.expression, { document, CSS: { escape: x => x }, location: { href: tabUrl, origin: pageOrigin ?? new URL(tabUrl).origin }, window: { innerWidth: 800, innerHeight: 600 } }) } };
   } catch (error) {
     return { exceptionDetails: { text: error.message } };
   }
@@ -271,6 +272,32 @@ process.on('exit', () => {
   delays.operation = OPERATION_MS;
   assert.equal(attached.size, 0, 'a timed-out operation still detaches');
 
+  // A timed-out operation is cancelled: neither it nor a queued operation acts after the caller was told it failed.
+  delays.operation = 20;
+  slowMethod = 'Runtime.evaluate';
+  slowMs = 60;
+  const scrollsBefore = scrollEvents.length;
+  const clicksBefore = mouseEvents;
+  const slow = run('browser_scroll', { tabId: 7, deltaY: 10 });
+  const queued = run('browser_click', { tabId: 7, selector: '#target' });
+  await assert.rejects(() => slow, /timed out/);
+  await assert.rejects(() => queued, /timed out/);
+  await new Promise(resolve => setTimeout(resolve, 250));
+  slowMethod = undefined;
+  slowMs = 0;
+  delays.operation = OPERATION_MS;
+  assert.equal(scrollEvents.length, scrollsBefore, 'a timed-out scroll does not run later');
+  assert.equal(mouseEvents, clicksBefore, 'a queued click whose caller timed out never runs');
+  assert.equal(attached.size, 0, 'cancelled operations leave the debugger detached');
+
+  // Origin re-check after attach: a navigation that races the attach is refused before any action.
+  pageOrigin = 'https://evil.example';
+  const scrollsBeforeRace = scrollEvents.length;
+  await assert.rejects(() => run('browser_scroll', { tabId: 7, deltaY: 10 }), /Tab moved to https:\/\/evil\.example/);
+  pageOrigin = undefined;
+  assert.equal(scrollEvents.length, scrollsBeforeRace, 'no action on a tab that moved during attach');
+  assert.equal(attached.size, 0);
+
   // Origin lock: a tab that moved is refused before attaching; re-sharing records the new origin.
   const attachesBeforeMove = attachCount;
   tabUrl = 'https://other.example/';
@@ -294,8 +321,12 @@ process.on('exit', () => {
   assert.equal(socketCount, socketsBefore + 1, 'the reconnect alarm opens a socket when none is active');
   connection.onclose({ code: 4001, reason: 'profile-mismatch' });
   assert.equal(currentStatus(), PROFILE_MISMATCH_TEXT, 'a pairing mismatch shows the unpair instruction');
-  const reopenedAgain = waitOpen();
   alarmEvents.emit({ name: 'reconnect' });
+  await tick();
+  assert.equal(socketCount, socketsBefore + 1, 'after a pairing mismatch the alarm does not retry');
+  assert.equal(currentStatus(), PROFILE_MISMATCH_TEXT);
+  const reopenedAgain = waitOpen();
+  chrome.runtime.onMessage.emit({ type: 'reconnect' }, { id: 'test' }, () => {});
   await reopenedAgain;
   connection.onclose({ code: 1008, reason: 'bad' });
   assert.equal(currentStatus(), DEFAULT_CLOSE_TEXT, 'other close codes keep the generic status');

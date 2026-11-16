@@ -10,9 +10,9 @@ const { WebSocketServer } = require('ws');
 
 const MAX_MESSAGE = 1024 * 1024;
 const MAX_LOG_BYTES = 256 * 1024;
-const EXTENSION_WAIT_MS = 10000;
+const EXTENSION_WAIT_MS = 30000; // covers one 30 s reconnect alarm period after the worker was suspended
 const REQUEST_TIMEOUT_MS = 30000;
-const SOCKET_TIMEOUT_MS = 35000;
+const SOCKET_TIMEOUT_MS = 65000; // extension wait + request timeout + margin
 const NOT_CONNECTED = 'Chrome is not connected. Open AGY Chrome Bridge in the selected profile.';
 const PROFILE_MISMATCH = { code: 4001, reason: 'profile-mismatch' };
 const root = path.join(process.env.LOCALAPPDATA || '', 'agy-chrome-bridge');

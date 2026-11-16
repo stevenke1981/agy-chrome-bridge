@@ -45,7 +45,7 @@ function callChrome(method, params) {
     if (!Number.isInteger(state.port) || state.port < 1 || state.port > 65535 || typeof state.token !== 'string') { reject(new Error('Invalid bridge endpoint')); return; }
     const socket = net.createConnection({ host: '127.0.0.1', port: state.port });
     let input = Buffer.alloc(0);
-    socket.setTimeout(35000, () => socket.destroy(new Error('Chrome did not respond')));
+    socket.setTimeout(65000, () => socket.destroy(new Error('Chrome did not respond')));
     socket.on('error', reject);
     socket.on('connect', () => socket.write(JSON.stringify({ token: state.token, method, params }) + '\n'));
     socket.on('data', chunk => {
