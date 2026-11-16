@@ -40,18 +40,35 @@ function shareLabel(shares) {
   return isSharedHere(shares) ? 'Stop sharing this tab' : 'Share this tab again';
 }
 
+const autoShareSwitch = document.querySelector('#autoShare');
+const footer = document.querySelector('footer');
+// Auto-share is on unless the user turned it off; it then covers every HTTP(S) tab.
+let autoShare = (await chrome.storage.local.get('autoShare')).autoShare !== false;
+
+function emptyItem(text) {
+  const item = document.createElement('li');
+  item.className = 'empty';
+  item.textContent = text;
+  return item;
+}
+
 async function renderShares() {
+  autoShareSwitch.checked = autoShare;
+  button.hidden = autoShare;
+  if (footer) footer.textContent = autoShare
+    ? 'Auto-share is on: AGY can use any HTTP(S) tab in this profile. Turn it off to share tabs one by one.'
+    : 'AGY can read and operate only the tabs you share. Sharing ends when Chrome closes.';
+  if (autoShare) {
+    document.querySelector('#unavailable').hidden = canShare;
+    sharedList.replaceChildren(emptyItem(canShare ? 'All HTTP(S) tabs, including this one' : 'All HTTP(S) tabs'));
+    return;
+  }
   const shares = await readShares();
   button.textContent = shareLabel(shares);
   button.setAttribute('data-shared', String(isSharedHere(shares)));
   const tabs = (await Promise.all(shares.sharedTabs.map(id => chrome.tabs.get(id).catch(() => null)))).filter(Boolean);
   sharedList.replaceChildren();
-  if (!tabs.length) {
-    const item = document.createElement('li');
-    item.className = 'empty';
-    item.textContent = 'No tabs shared';
-    sharedList.append(item);
-  }
+  if (!tabs.length) sharedList.append(emptyItem('No tabs shared'));
   for (const sharedTab of tabs) {
     const item = document.createElement('li');
     const text = document.createElement('span');
@@ -95,6 +112,11 @@ await updateStatus();
 await renderShares();
 setInterval(updateStatus, 1000);
 reconnect.addEventListener('click', reconnectFromPopup);
+autoShareSwitch.addEventListener('change', async () => {
+  autoShare = Boolean(autoShareSwitch.checked);
+  await chrome.storage.local.set({ autoShare });
+  await renderShares();
+});
 button.addEventListener('click', async () => {
   const shares = await readShares();
   const next = isSharedHere(shares) ? withoutTab(shares, tab.id) : withTab(shares, tab.id, currentOrigin);

@@ -104,7 +104,8 @@ function navigate(target) {
 }
 
 // Starts empty: the background must create this profile's pairing key on its own.
-const localStore = {};
+// Manual sharing for the main flow; auto-share (the default when unset) is tested separately below.
+const localStore = { autoShare: false };
 let localSets = 0;
 const badges = [];
 const chrome = {
@@ -115,7 +116,11 @@ const chrome = {
     session: { get: async defaults => readSession(defaults), set: async values => { Object.assign(sessionStore, values); } },
     local: { get: async () => ({ ...localStore }), set: async values => { localSets++; Object.assign(localStore, values); } },
   },
-  tabs: { get: async id => ({ id, url: tabUrl, title: 'Example' }), onRemoved: event() },
+  tabs: {
+    get: async id => ({ id, url: tabUrl, title: 'Example' }),
+    query: async () => [{ id: 7, url: tabUrl, title: 'Example', active: true }, { id: 9, url: 'chrome://settings/', title: 'Settings' }],
+    onRemoved: event(),
+  },
   debugger: {
     attach: async target => {
       if (attached.has(target.tabId)) throw new Error('Another debugger is already attached');
@@ -317,6 +322,21 @@ process.on('exit', () => {
   await chrome.storage.session.set({ sharedOrigins: { 7: 'https://other.example' } });
   assert.equal((await run('browser_scroll', { tabId: 7, deltaY: 10 })).ok, true, 're-sharing updates the recorded origin');
   await chrome.storage.session.set({ sharedOrigins: { 7: 'https://example.com' } });
+  tabUrl = 'https://example.com/';
+
+  // Auto-share: every HTTP(S) tab is available without a manual share, and the origin lock is lifted.
+  delete localStore.autoShare;
+  await chrome.storage.session.set({ sharedTabs: [], sharedOrigins: {} });
+  assert.deepEqual((await run('browser_tabs', {})).map(listedTab => listedTab.id), [7], 'auto-share lists HTTP(S) tabs only');
+  assert.equal((await run('browser_scroll', { tabId: 7, deltaY: 10 })).ok, true, 'an unshared tab works when auto-share is on (the default)');
+  assert.equal((await run('browser_navigate', { tabId: 7, url: 'https://example.org/' })).navigated, 'https://example.org/', 'auto-share allows other sites');
+  tabUrl = 'https://other.example/';
+  assert.equal((await run('browser_scroll', { tabId: 7, deltaY: 10 })).ok, true, 'a tab that moved stays usable under auto-share');
+  tabUrl = 'chrome://settings/';
+  await assert.rejects(() => run('browser_scroll', { tabId: 7, deltaY: 10 }), /HTTP and HTTPS/, 'auto-share never covers browser pages');
+  localStore.autoShare = false;
+  await assert.rejects(() => run('browser_scroll', { tabId: 7, deltaY: 10 }), /Tab is not shared/, 'turning auto-share off restores manual sharing');
+  await chrome.storage.session.set({ sharedTabs: [7], sharedOrigins: { 7: 'https://example.com' } });
   tabUrl = 'https://example.com/';
 
   // Reconnect alarm and close codes.
