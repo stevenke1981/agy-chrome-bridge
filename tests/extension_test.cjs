@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
+const { createHmac, webcrypto } = require('node:crypto');
 
 function event() {
   const callbacks = new Set();
@@ -8,7 +9,17 @@ function event() {
 }
 const updated = event();
 const debuggerEvents = event();
-const nativePort = { onMessage: event(), onDisconnect: event(), postMessage() {} };
+let connection;
+const opens = [];
+const waitOpen = () => new Promise(resolve => opens.push(resolve));
+let resolveProof;
+class FakeWebSocket {
+  static OPEN = 1;
+  static CLOSING = 2;
+  constructor(url) { this.url = url; this.readyState = 0; this.sent = []; connection = this; setImmediate(() => { this.readyState = 1; this.onopen(); opens.shift()?.(this); }); }
+  send(value) { const message = JSON.parse(value); this.sent.push(message); if (message.type === 'proof') resolveProof?.(message); }
+  close() { this.readyState = 3; this.onclose(); }
+}
 let images = [];
 let newPageLoaded = false;
 let download = false;
@@ -21,8 +32,8 @@ let typedText = [];
 let keyEvents = [];
 let scrollEvents = [];
 const chrome = {
-  runtime: { connectNative: () => nativePort, onMessage: event(), onStartup: event(), onInstalled: event(), id: 'test' },
-  storage: { session: { get: async () => ({ sharedTabs: [7] }), set: async () => {} } },
+  runtime: { getURL: path => `chrome-extension://test/${path}`, onMessage: event(), onStartup: event(), onInstalled: event(), id: 'test' },
+  storage: { session: { get: async () => ({ sharedTabs: [7] }), set: async () => {} }, local: { get: async () => ({ profileKey: 'c'.repeat(64) }) } },
   tabs: { get: async id => ({ id, url: 'https://example.com', title: 'Example' }), update: async (id, options) => {
     updated.emit(id, { status: 'complete' }, { url: 'https://old.example/' });
     setImmediate(() => { updated.emit(id, { status: 'loading', url: options.url }, { url: options.url }); updated.emit(id, { status: 'complete' }, { url: options.url }); });
@@ -59,20 +70,44 @@ const chrome = {
     return {};
   } },
 };
-const context = vm.createContext({ chrome, URL, setTimeout, clearTimeout, console });
+const firstOpen = waitOpen();
+const context = vm.createContext({ chrome, URL, WebSocket: FakeWebSocket, crypto: webcrypto, TextEncoder, fetch: async () => ({ ok: true, json: async () => ({ token: 'a'.repeat(64) }) }), setTimeout: (fn, ms) => { const timer = setTimeout(fn, ms); timer.unref(); return timer; }, clearTimeout, setInterval: () => 1, clearInterval: () => {}, console });
 vm.runInContext(fs.readFileSync('extension/background.js', 'utf8'), context);
 const run = (method, params) => vm.runInContext('run', context)(method, params);
 (async () => {
   let reported;
+  await firstOpen;
   chrome.runtime.onMessage.emit({ type: 'status' }, { id: 'test' }, result => { reported = result.status; });
   assert.equal(reported, 'connecting');
-  nativePort.onMessage.emit({ type: 'ready' });
+  assert.equal(connection.url, 'ws://127.0.0.1:38745/bridge');
+  assert.equal(connection.sent[0].type, 'hello');
+  assert.equal('token' in connection.sent[0], false, 'never send the secret to an unverified server');
+  connection.onmessage({ data: JSON.stringify({ id: 'fake', method: 'browser_tabs' }) });
+  assert.equal(connection.readyState, 3, 'commands before authentication must be rejected');
+  assert.equal(connection.sent.length, 1);
+  const secondOpen = waitOpen();
+  chrome.runtime.onMessage.emit({ type: 'reconnect' }, { id: 'test' }, () => {});
+  await secondOpen;
+  await connection.onmessage({ data: JSON.stringify({ type: 'challenge', nonce: 'b'.repeat(64), proof: '0'.repeat(64) }) });
+  assert.equal(connection.readyState, 3, 'an unverified server must not complete authentication');
+  assert.equal(connection.sent.length, 1, 'the pairing secret and profile key stay private');
+  const thirdOpen = waitOpen();
+  chrome.runtime.onMessage.emit({ type: 'reconnect' }, { id: 'test' }, () => {});
+  await thirdOpen;
+  const nonce = 'b'.repeat(64);
+  const hello = connection.sent[0];
+  const proof = createHmac('sha256', Buffer.from('a'.repeat(64), 'hex')).update(`server:${hello.nonce}:${nonce}:`).digest('hex');
+  const clientProof = new Promise(resolve => { resolveProof = resolve; });
+  connection.onmessage({ data: JSON.stringify({ type: 'challenge', nonce, proof }) });
+  const response = await clientProof;
+  assert.equal(response.profileKey, 'c'.repeat(64));
+  connection.onmessage({ data: JSON.stringify({ type: 'ready' }) });
   chrome.runtime.onMessage.emit({ type: 'status' }, { id: 'test' }, result => { reported = result.status; });
   assert.equal(reported, 'connected');
-  chrome.runtime.lastError = { message: 'Native host unavailable' };
-  nativePort.onDisconnect.emit();
+  connection.onmessage({ data: 'null' });
+  assert.equal(connection.readyState, 3, 'invalid server messages must close the connection');
   chrome.runtime.onMessage.emit({ type: 'status' }, { id: 'test' }, result => { reported = result.status; });
-  assert.equal(reported, 'Native host unavailable');
+  assert.equal(reported, 'Local bridge sent invalid data');
   assert.equal((await run('browser_tabs', {}))[0].id, 7);
   await assert.rejects(() => run('browser_snapshot', { tabId: 8 }), /not shared/);
   await assert.rejects(() => run('browser_navigate', { tabId: 7, url: 'file:///secret' }), /HTTP and HTTPS/);

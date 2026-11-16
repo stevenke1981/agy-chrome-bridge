@@ -9,8 +9,10 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           persist-credentials: false
+      - run: npm ci --omit=optional --ignore-scripts
       - run: node --check src/bridge.cjs
-      - run: python tests/bridge_test.py
+      - run: node --check src/gateway.cjs
+      - run: node tests/bridge_test.cjs
       - run: node tests/extension_test.cjs
       - run: node tests/popup_test.cjs
       - run: python tests/installer_test.py

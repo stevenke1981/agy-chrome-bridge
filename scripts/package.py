@@ -23,14 +23,24 @@ if archive.exists() or checksum.exists():
 
 sources = {
     "bridge.cjs": root / "src" / "bridge.cjs",
+    "gateway.cjs": root / "src" / "gateway.cjs",
     "install.ps1": root / "scripts" / "install.ps1",
     "README.md": root / "README.md",
     "LICENSE": root / "LICENSE",
+    "package.json": root / "package.json",
+    "package-lock.json": root / "package-lock.json",
     "extension/manifest.json": root / "extension" / "manifest.json",
     "extension/background.js": root / "extension" / "background.js",
     "extension/popup.html": root / "extension" / "popup.html",
     "extension/popup.js": root / "extension" / "popup.js",
 }
+for name in (
+    "index.js", "package.json", "LICENSE", "lib/buffer-util.js", "lib/constants.js",
+    "lib/event-target.js", "lib/extension.js", "lib/limiter.js", "lib/permessage-deflate.js",
+    "lib/receiver.js", "lib/sender.js", "lib/stream.js", "lib/subprotocol.js",
+    "lib/validation.js", "lib/websocket-server.js", "lib/websocket.js",
+):
+    sources[f"node_modules/ws/{name}"] = root / "node_modules" / "ws" / name
 with ZipFile(archive, "x", compression=ZIP_DEFLATED) as bundle:
     for name, path in sources.items():
         bundle.write(path, name)

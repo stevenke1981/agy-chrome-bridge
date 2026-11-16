@@ -1,9 +1,10 @@
 import json
 import os
 import shutil
-import struct
+import socket
 import subprocess
 import tempfile
+import time
 import unittest
 import uuid
 from pathlib import Path
@@ -28,7 +29,8 @@ class InstallerTest(unittest.TestCase):
             try:
                 result = subprocess.run(['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(SCRIPT), '-RegistryPath', 'HKCU:\\' + key_name], capture_output=True, text=True, env=env, timeout=30)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertTrue((bridge / 'bridge' / 'host.cmd').is_file())
+                self.assertTrue((bridge / 'bridge' / 'gateway.cjs').is_file())
+                self.assertRegex(json.loads((bridge / 'extension' / 'bridge_config.json').read_text())['token'], r'^[a-f0-9]{64}$')
             finally:
                 subprocess.run(['reg', 'delete', 'HKCU\\' + key_name, '/f'], capture_output=True)
 
@@ -46,6 +48,11 @@ class InstallerTest(unittest.TestCase):
             output = root / 'agy-args.txt'
             key_name = 'Software\\AGYChromeBridgeTests\\' + uuid.uuid4().hex
             registry = 'HKCU:\\' + key_name
+            bridge.mkdir(parents=True)
+            old_manifest = bridge / 'com.agy_chrome_bridge.json'
+            old_manifest.write_text('old native host')
+            registered = subprocess.run(['reg', 'add', 'HKCU\\' + key_name, '/ve', '/t', 'REG_SZ', '/d', str(old_manifest), '/f'], capture_output=True, text=True)
+            self.assertEqual(registered.returncode, 0, registered.stderr)
             env = {**os.environ, 'LOCALAPPDATA': str(local), 'USERPROFILE': str(profile), 'AGY_TEST_OUTPUT': str(output), 'PATH': str(root) + os.pathsep + os.environ['PATH']}
             try:
                 result = subprocess.run(['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(SCRIPT), '-RegistryPath', registry], capture_output=True, text=True, env=env, timeout=30)
@@ -55,6 +62,10 @@ class InstallerTest(unittest.TestCase):
                 self.assertIn('--mcp', arguments)
                 self.assertFalse(list(bridge.rglob('*.exe')))
                 self.assertEqual(json.loads(config.read_text())['mcpServers']['other']['command'], 'other')
+                self.assertFalse(old_manifest.exists())
+                self.assertTrue(list(bridge.glob('com.agy_chrome_bridge.json.backup_*')))
+                current = subprocess.run(['reg', 'query', 'HKCU\\' + key_name, '/ve'], capture_output=True, text=True)
+                self.assertNotIn(str(old_manifest), current.stdout)
             finally:
                 subprocess.run(['reg', 'delete', 'HKCU\\' + key_name, '/f'], capture_output=True)
 
@@ -76,12 +87,14 @@ class InstallerTest(unittest.TestCase):
             config.write_text(old_config, encoding='utf-8')
             source_bridge = root / 'new.cjs'
             source_bridge.write_text('new bridge')
-            source_extension = root / 'new-extension'
-            source_extension.mkdir()
-            (source_extension / 'new.txt').write_text('new extension')
+            source_extension = Path('extension').resolve()
             (root / 'agy.cmd').write_text('@exit /b 7\n')
             key_name = 'Software\\AGYChromeBridgeTests\\' + uuid.uuid4().hex
             registry = 'HKCU:\\' + key_name
+            old_manifest = bridge / 'com.agy_chrome_bridge.json'
+            old_manifest.write_text('old native host')
+            self.assertEqual(subprocess.run(['reg', 'add', 'HKCU\\' + key_name, '/ve', '/t', 'REG_SZ', '/d', str(old_manifest), '/f'], capture_output=True).returncode, 0)
+            self.assertEqual(subprocess.run(['reg', 'add', 'HKCU\\' + key_name, '/v', 'Marker', '/t', 'REG_SZ', '/d', 'keep', '/f'], capture_output=True).returncode, 0)
             env = {**os.environ, 'LOCALAPPDATA': str(local), 'USERPROFILE': str(profile), 'PATH': str(root) + os.pathsep + os.environ['PATH']}
             try:
                 result = subprocess.run(['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(SCRIPT), '-Bridge', str(source_bridge), '-Extension', str(source_extension), '-Node', str(node), '-RegistryPath', registry], capture_output=True, text=True, env=env, timeout=30)
@@ -90,13 +103,17 @@ class InstallerTest(unittest.TestCase):
                 self.assertEqual(installed_bridge.read_text(), 'old bridge')
                 self.assertEqual((extension / 'old.txt').read_text(), 'old extension')
                 self.assertEqual(config.read_text(encoding='utf-8'), old_config)
-                self.assertFalse((extension / 'new.txt').exists())
-                check = subprocess.run(['reg', 'query', 'HKCU\\' + key_name], capture_output=True)
-                self.assertNotEqual(check.returncode, 0)
+                self.assertFalse((extension / 'manifest.json').exists())
+                self.assertEqual(old_manifest.read_text(), 'old native host')
+                check = subprocess.run(['reg', 'query', 'HKCU\\' + key_name], capture_output=True, text=True)
+                self.assertEqual(check.returncode, 0)
+                self.assertIn(str(old_manifest), check.stdout)
+                self.assertIn('Marker', check.stdout)
+                self.assertIn('keep', check.stdout)
             finally:
                 subprocess.run(['reg', 'delete', 'HKCU\\' + key_name, '/f'], capture_output=True)
 
-    def test_installed_cmd_launches_node_native_host(self):
+    def test_installed_gateway_launches_existing_node(self):
         with tempfile.TemporaryDirectory(prefix='agy-測試-🧪-') as temp:
             root = Path(temp)
             local = root / 'local'
@@ -110,19 +127,29 @@ class InstallerTest(unittest.TestCase):
             try:
                 result = subprocess.run(['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(SCRIPT), '-RegistryPath', registry], capture_output=True, text=True, env=env, timeout=30)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                host = local / 'agy-chrome-bridge' / 'bridge' / 'host.cmd'
-                manifest = json.loads((local / 'agy-chrome-bridge' / 'com.agy_chrome_bridge.json').read_text(encoding='utf-8'))
-                self.assertEqual(Path(manifest['path']), host)
+                installed = local / 'agy-chrome-bridge'
+                gateway = installed / 'bridge' / 'gateway.cjs'
+                client = installed / 'bridge' / 'bridge.cjs'
+                config = json.loads((installed / 'extension' / 'bridge_config.json').read_text(encoding='utf-8'))
+                self.assertRegex(config['token'], r'^[a-f0-9]{64}$')
+                self.assertTrue(gateway.is_file())
                 self.assertFalse(list((local / 'agy-chrome-bridge').rglob('*.exe')))
-                process = subprocess.Popen(['cmd.exe', '/d', '/c', str(host)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+                with socket.socket() as available:
+                    available.bind(('127.0.0.1', 0))
+                    env['AGY_BRIDGE_PORT'] = str(available.getsockname()[1])
+                process = subprocess.Popen([shutil.which('node'), str(gateway)], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
                 try:
-                    header = process.stdout.read(4)
-                    if len(header) != 4:
-                        self.fail(process.stderr.read().decode(errors='replace'))
-                    ready = json.loads(process.stdout.read(struct.unpack('<I', header)[0]))
-                    self.assertEqual(ready, {'type': 'ready'})
+                    endpoint = installed / 'state' / 'endpoint.json'
+                    for _ in range(50):
+                        if endpoint.exists():
+                            break
+                        time.sleep(0.1)
+                    self.assertTrue(endpoint.exists(), process.poll())
+                    stopped = subprocess.run([shutil.which('node'), str(client), '--shutdown'], capture_output=True, text=True, env=env, timeout=10)
+                    self.assertEqual(stopped.returncode, 0, stopped.stderr)
                 finally:
-                    process.stdin.close()
+                    if process.poll() is None:
+                        process.kill()
                     process.wait(timeout=5)
                     process.stdout.close()
                     process.stderr.close()

@@ -16,21 +16,30 @@ function element() {
 }
 
 async function setup(tab) {
-  const elements = Object.fromEntries(['version', 'status', 'tab', 'toggle', 'reconnect', 'shared', 'unavailable', 'diagnose', 'diagnostic'].map(id => [id, element()]));
+  const elements = Object.fromEntries(['version', 'status', 'pair', 'tab', 'toggle', 'reconnect', 'shared', 'unavailable', 'diagnose', 'diagnostic'].map(id => [id, element()]));
   const document = { querySelector: selector => elements[selector.slice(1)], createElement: element };
   let sharedTabs = [];
+  let profileKey;
+  const messages = [];
   const chrome = {
     tabs: { query: async () => [tab], get: async id => ({ ...tab, id }) },
-    runtime: { getManifest: () => manifest, sendMessage: async () => ({ status: 'connected' }) },
-    storage: { session: { get: async () => ({ sharedTabs }), set: async value => { sharedTabs = value.sharedTabs; } } },
+    runtime: { getManifest: () => manifest, sendMessage: async message => { messages.push(message.type); return { status: 'connected' }; } },
+    storage: { session: { get: async () => ({ sharedTabs }), set: async value => { sharedTabs = value.sharedTabs; } }, local: { get: async () => ({ profileKey }), set: async value => { profileKey = value.profileKey; } } },
   };
-  await new AsyncFunction('chrome', 'document', 'setInterval', source)(chrome, document, () => {});
-  return { elements, shared: () => sharedTabs };
+  const crypto = { getRandomValues: bytes => bytes.fill(7) };
+  class FakeWebSocket { constructor(url) { this.url = url; setImmediate(() => this.onopen()); } close() {} }
+  await new AsyncFunction('chrome', 'document', 'setInterval', 'crypto', 'WebSocket', source)(chrome, document, () => {}, crypto, FakeWebSocket);
+  return { elements, shared: () => sharedTabs, paired: () => profileKey, messages };
 }
 
 (async () => {
   const current = await setup({ id: 7, title: 'Example', url: 'https://example.com/' });
   assert.equal(current.elements.version.textContent, `Version ${manifest.version}`);
+  assert.equal(current.elements.pair.hidden, false);
+  await current.elements.pair.click();
+  assert.equal(current.elements.pair.hidden, true);
+  assert.match(current.paired(), /^[a-f0-9]{64}$/);
+  assert.ok(current.messages.includes('reconnect'));
   assert.equal(current.elements.status.textContent, 'Bridge: connected');
   assert.equal(current.elements.shared.children[0].textContent, 'No tabs shared');
   await current.elements.toggle.click();

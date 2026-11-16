@@ -1,24 +1,72 @@
-const hostName = 'com.agy_chrome_bridge';
-let port;
+let socket;
+let reconnectTimer;
+let connecting = false;
 let status = 'disconnected';
 
-function connect() {
-  if (port) return;
+async function connect() {
+  if (connecting || (socket && socket.readyState < WebSocket.CLOSING)) return;
+  connecting = true;
+  clearTimeout(reconnectTimer);
   status = 'connecting';
-  port = chrome.runtime.connectNative(hostName);
-  port.onMessage.addListener(async (message) => {
-    if (message.type === 'ready') { status = 'connected'; return; }
+  let config;
+  let profileKey;
+  try {
+    const response = await fetch(chrome.runtime.getURL('bridge_config.json'));
+    if (!response.ok) throw new Error('missing configuration');
+    config = await response.json();
+    if (typeof config.token !== 'string' || !/^[a-f0-9]{64}$/.test(config.token)) throw new Error('invalid configuration');
+    ({ profileKey } = await chrome.storage.local.get('profileKey'));
+  } catch {
+    status = 'Install the bridge and load its installed extension folder';
+    connecting = false;
+    return;
+  }
+  if (typeof profileKey !== 'string' || !/^[a-f0-9]{64}$/.test(profileKey)) { status = 'Pair this Chrome profile in the popup'; connecting = false; return; }
+  const key = await crypto.subtle.importKey('raw', Uint8Array.from(config.token.match(/../g), hex => parseInt(hex, 16)), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const sign = async value => [...new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(value)))].map(byte => byte.toString(16).padStart(2, '0')).join('');
+  const clientNonce = [...crypto.getRandomValues(new Uint8Array(32))].map(byte => byte.toString(16).padStart(2, '0')).join('');
+  const connection = new WebSocket('ws://127.0.0.1:38745/bridge');
+  socket = connection;
+  connecting = false;
+  let serverVerified = false;
+  let ready = false;
+  let failure;
+  connection.onopen = () => connection.send(JSON.stringify({ type: 'hello', nonce: clientNonce }));
+  connection.onmessage = async event => {
+    let message;
+    try { message = JSON.parse(event.data); }
+    catch { failure = 'Local bridge sent invalid data'; connection.close(); return; }
+    if (!message || typeof message !== 'object' || Array.isArray(message)) { failure = 'Local bridge sent invalid data'; connection.close(); return; }
+    if (message.type === 'challenge') {
+      if (typeof message.nonce !== 'string' || !/^[a-f0-9]{64}$/.test(message.nonce) || message.proof !== await sign(`server:${clientNonce}:${message.nonce}:`)) {
+        failure = 'Local bridge authentication failed';
+        connection.close();
+        return;
+      }
+      serverVerified = true;
+      connection.send(JSON.stringify({ type: 'proof', profileKey, proof: await sign(`client:${clientNonce}:${message.nonce}:${profileKey}`) }));
+      return;
+    }
+    if (message.type === 'ready' && serverVerified) { ready = true; status = 'connected'; return; }
+    if (!ready) { failure = 'Local bridge authentication failed'; connection.close(); return; }
     try {
       const result = await run(message.method, message.params || {});
-      port?.postMessage({ id: message.id, result });
+      if (connection.readyState === WebSocket.OPEN) connection.send(JSON.stringify({ id: message.id, result }));
     } catch (error) {
-      port?.postMessage({ id: message.id, error: String(error.message || error) });
+      if (connection.readyState === WebSocket.OPEN) connection.send(JSON.stringify({ id: message.id, error: String(error.message || error) }));
     }
-  });
-  port.onDisconnect.addListener(() => {
-    status = chrome.runtime.lastError?.message || 'disconnected';
-    port = undefined;
-  });
+  };
+  connection.onclose = () => {
+    clearInterval(heartbeat);
+    if (socket !== connection) return;
+    status = failure || 'AGY is not running or local connection is blocked';
+    socket = undefined;
+    reconnectTimer = setTimeout(connect, 5000);
+  };
+  connection.onerror = () => { status = 'Local connection failed'; };
+  const heartbeat = setInterval(() => {
+    if (connection.readyState === WebSocket.OPEN) connection.send(JSON.stringify({ type: 'ping' }));
+  }, 20000);
 }
 
 async function sharedTabs() {

@@ -1,26 +1,38 @@
 param(
     [string]$Bridge,
+    [string]$Gateway,
     [string]$Extension,
     [string]$Node,
     [string]$RegistryPath = 'HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.agy_chrome_bridge'
 )
 $ErrorActionPreference = 'Stop'
+function Remove-RegistryDefaultValue([string]$Path) {
+    if ($Path -notmatch '^HKCU:\\(.+)$') { throw 'Only HKCU native host keys are supported' }
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($Matches[1], $true)
+    try { $key.DeleteValue('', $false) } finally { $key.Dispose() }
+}
 if (-not $Bridge) {
     $Bridge = if (Test-Path (Join-Path $PSScriptRoot 'bridge.cjs')) { Join-Path $PSScriptRoot 'bridge.cjs' } else { Join-Path $PSScriptRoot '..\src\bridge.cjs' }
+}
+if (-not $Gateway) {
+    $Gateway = if (Test-Path (Join-Path $PSScriptRoot 'gateway.cjs')) { Join-Path $PSScriptRoot 'gateway.cjs' } else { Join-Path $PSScriptRoot '..\src\gateway.cjs' }
 }
 if (-not $Extension) {
     $Extension = if (Test-Path (Join-Path $PSScriptRoot 'extension')) { Join-Path $PSScriptRoot 'extension' } else { Join-Path $PSScriptRoot '..\extension' }
 }
 if (-not $Node) { $Node = (Get-Command node.exe -ErrorAction Stop | Select-Object -First 1).Source }
 $sourceBridge = (Resolve-Path -LiteralPath $Bridge).Path
+$sourceGateway = (Resolve-Path -LiteralPath $Gateway).Path
 $sourceExtension = (Resolve-Path -LiteralPath $Extension).Path
+$sourceWs = if (Test-Path (Join-Path $PSScriptRoot 'node_modules\ws')) { Join-Path $PSScriptRoot 'node_modules\ws' } else { Join-Path $PSScriptRoot '..\node_modules\ws' }
+$sourceWs = (Resolve-Path -LiteralPath $sourceWs).Path
 $nodePath = (Resolve-Path -LiteralPath $Node).Path
 $version = & $nodePath --version
 if ($LASTEXITCODE -ne 0 -or $version -notmatch '^v(\d+)\.' -or [int]$Matches[1] -lt 18) { throw 'Node.js 18 or newer is required. No changes made.' }
 $root = Join-Path $env:LOCALAPPDATA 'agy-chrome-bridge'
 $bridgeDirectory = Join-Path $root 'bridge'
 $bridgePath = Join-Path $bridgeDirectory 'bridge.cjs'
-$hostPath = Join-Path $bridgeDirectory 'host.cmd'
+$gatewayPath = Join-Path $bridgeDirectory 'gateway.cjs'
 $legacyBin = Join-Path $root 'bin\agy-chrome-bridge.exe'
 $installedExtension = Join-Path $root 'extension'
 $manifestPath = Join-Path $root 'com.agy_chrome_bridge.json'
@@ -28,6 +40,15 @@ $configPath = Join-Path $env:USERPROFILE '.gemini\config\mcp_config.json'
 $registryExisted = Test-Path -LiteralPath $RegistryPath
 $previousRegistration = if ($registryExisted) { (Get-Item -LiteralPath $RegistryPath).GetValue('') } else { $null }
 if ($previousRegistration -and $previousRegistration -ne $manifestPath) { throw 'A different native host already owns com.agy_chrome_bridge. No changes made.' }
+$installedConfig = Join-Path $installedExtension 'bridge_config.json'
+if (Test-Path -LiteralPath $installedConfig) {
+    $pairToken = (Get-Content -Raw -Encoding UTF8 -LiteralPath $installedConfig | ConvertFrom-Json).token
+    if ($pairToken -notmatch '^[a-f0-9]{64}$') { throw 'Installed bridge configuration is invalid. No changes made.' }
+} else {
+    $bytes = [byte[]]::new(32)
+    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+    $pairToken = [BitConverter]::ToString($bytes).Replace('-', '').ToLowerInvariant()
+}
 if (Test-Path -LiteralPath $configPath) {
     $config = Get-Content -Raw -Encoding UTF8 -LiteralPath $configPath | ConvertFrom-Json
     $existing = $config.mcpServers.'agy-chrome-bridge'
@@ -41,26 +62,40 @@ if (Get-Process -Name 'agy-chrome-bridge' -ErrorAction SilentlyContinue | Where-
     throw 'The previous bridge is running. Disconnect the extension and exit AGY sessions before upgrading. No changes made.'
 }
 $nodeProcesses = Get-CimInstance Win32_Process -Filter "Name='node.exe'"
-if ($nodeProcesses | Where-Object { $_.CommandLine -and $_.CommandLine.Contains($bridgePath) }) {
-    throw 'The bridge is running. Disconnect the extension and exit AGY sessions before upgrading. No changes made.'
+if ($nodeProcesses | Where-Object { $_.CommandLine -and $_.CommandLine.Contains($bridgePath) -and $_.CommandLine.Contains('--mcp') }) {
+    throw 'The bridge is running. Exit AGY CLI and IDE sessions before upgrading. No changes made.'
+}
+if ($nodeProcesses | Where-Object { $_.CommandLine -and $_.CommandLine.Contains($gatewayPath) }) {
+    & $nodePath $bridgePath --shutdown
+    if ($LASTEXITCODE -ne 0) { throw 'Could not stop the previous gateway. No changes made.' }
+    Start-Sleep -Milliseconds 300
+    if (Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -and $_.CommandLine.Contains($gatewayPath) }) {
+        throw 'The previous gateway is still running. No changes made.'
+    }
 }
 New-Item -ItemType Directory -Force -Path $root | Out-Null
 $stamp = Get-Date -Format 'yyyyMMdd_HHmmss_fff'
 $stage = Join-Path $root "stage_$stamp"
 New-Item -ItemType Directory -Path (Join-Path $stage 'bridge') -Force | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $stage 'bridge\node_modules\ws\lib') -Force | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $stage 'extension') -Force | Out-Null
 Copy-Item -LiteralPath $sourceBridge -Destination (Join-Path $stage 'bridge\bridge.cjs')
-Copy-Item -LiteralPath $sourceExtension -Destination (Join-Path $stage 'extension') -Recurse
-$escapedNode = $nodePath.Replace('%', '%%')
-$cmd = "@echo off`r`nchcp 65001 >nul`r`nsetlocal DisableDelayedExpansion`r`n`"$escapedNode`" `"%~dp0bridge.cjs`"`r`n"
-[System.IO.File]::WriteAllText((Join-Path $stage 'bridge\host.cmd'), $cmd, [System.Text.UTF8Encoding]::new($false))
-$native = @{ name = 'com.agy_chrome_bridge'; description = 'AGY Chrome Bridge'; path = $hostPath; type = 'stdio'; allowed_origins = @('chrome-extension://deankghpcmnggohdfkoaggafbmjmkmlj/') }
-[System.IO.File]::WriteAllText((Join-Path $stage 'host.json'), ($native | ConvertTo-Json), [System.Text.UTF8Encoding]::new($false))
+Copy-Item -LiteralPath $sourceGateway -Destination (Join-Path $stage 'bridge\gateway.cjs')
+foreach ($name in @('index.js', 'package.json', 'LICENSE')) { Copy-Item -LiteralPath (Join-Path $sourceWs $name) -Destination (Join-Path (Join-Path $stage 'bridge\node_modules\ws') $name) }
+Get-ChildItem -LiteralPath (Join-Path $sourceWs 'lib') -File -Filter '*.js' | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination (Join-Path (Join-Path $stage 'bridge\node_modules\ws\lib') $_.Name) }
+foreach ($name in @('manifest.json', 'background.js', 'popup.html', 'popup.js')) { Copy-Item -LiteralPath (Join-Path $sourceExtension $name) -Destination (Join-Path (Join-Path $stage 'extension') $name) }
+$configText = @{ token = $pairToken } | ConvertTo-Json -Compress
+$configPathStage = Join-Path $stage 'extension\bridge_config.json'
+[System.IO.File]::WriteAllText($configPathStage, $configText, [System.Text.UTF8Encoding]::new($false))
+$sid = (& (Join-Path $env:SystemRoot 'System32\whoami.exe') /user /fo csv /nh).Trim().Split(',')[-1].Trim('"')
+if ($sid -notmatch '^S-1-(?:\d+-)*\d+$') { throw 'Cannot determine current user SID' }
+& (Join-Path $env:SystemRoot 'System32\icacls.exe') $configPathStage /inheritance:r /grant:r "*${sid}:F" '*S-1-5-18:F' '*S-1-5-32-544:F' | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Could not restrict bridge configuration ACL' }
 $configBackup = "$configPath.backup_agy_chrome_$stamp"
 if (Test-Path -LiteralPath $configPath) { Copy-Item -LiteralPath $configPath -Destination $configBackup }
 $paths = @(
     @{ Target = $bridgeDirectory; Source = (Join-Path $stage 'bridge') },
-    @{ Target = $installedExtension; Source = (Join-Path $stage 'extension') },
-    @{ Target = $manifestPath; Source = (Join-Path $stage 'host.json') }
+    @{ Target = $installedExtension; Source = (Join-Path $stage 'extension') }
 )
 $moved = [System.Collections.Generic.List[object]]::new()
 $registryChanged = $false
@@ -74,9 +109,15 @@ try {
         Move-Item -LiteralPath $item.Source -Destination $item.Target
         $record.Installed = $true
     }
-    if (-not $registryExisted) { New-Item -Path $RegistryPath -Force | Out-Null }
-    $registryChanged = $true
-    Set-Item -LiteralPath $RegistryPath -Value $manifestPath
+    if (Test-Path -LiteralPath $manifestPath) {
+        $backup = "$manifestPath.backup_$stamp"
+        Move-Item -LiteralPath $manifestPath -Destination $backup
+        $moved.Add(@{ Target = $manifestPath; Backup = $backup; Installed = $false })
+    }
+    if ($registryExisted) {
+        $registryChanged = $true
+        Remove-RegistryDefaultValue $RegistryPath
+    }
     $mcpStarted = $true
     & agy mcp add agy-chrome-bridge -- $nodePath $bridgePath --mcp
     if ($LASTEXITCODE -ne 0) { throw "AGY MCP registration failed with exit code $LASTEXITCODE" }
@@ -88,8 +129,8 @@ try {
     if ($registryChanged) {
         if ($registryExisted) {
             if ($null -ne $previousRegistration) { Set-Item -LiteralPath $RegistryPath -Value $previousRegistration }
-            else { (Get-Item -LiteralPath $RegistryPath).DeleteValue('', $false) }
-        } else { Remove-Item -LiteralPath $RegistryPath }
+            else { Remove-RegistryDefaultValue $RegistryPath }
+        }
     }
     for ($i = $moved.Count - 1; $i -ge 0; $i--) {
         $record = $moved[$i]
